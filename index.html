@@ -6,76 +6,92 @@
 <title>Ortografía · Gemini — beta</title>
 <style>
   :root {
-    --stone:#e6e4de; --paper:#f7f6f3; --ink:#1f1e1b; --muted:#6f6d66;
-    --rule:#cbc8c0; --ok:#2f6b3e; --fail:#9a2f22; --warn:#8a6a1f; --accent:#f0b429;
-    --mono: ui-monospace,"SF Mono",Menlo,Consolas,monospace;
-    --sans: system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    --canvas: #17191d; --surface: #202329; --surface-raised: #282c33;
+    --ink: #f2f0ed; --muted: #aaaeb7; --rule: #3b414b; --rule-strong: #555d6b;
+    --ok: #9bd5af; --fail: #ff9a8d; --warn: #f2cc83; --accent: #ff7d6e;
+    --accent-strong: #ff968a; --focus: #ffe09a;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   }
-  *{box-sizing:border-box}
-  body{margin:0;padding:36px 24px 90px;background:var(--stone);color:var(--ink);font:15px/1.5 var(--sans)}
-  .wrap{max-width:900px;margin:0 auto}
-  h1{font-size:21px;font-weight:600;margin:0 0 3px}
-  .sub{font-size:13px;color:var(--muted);margin-bottom:22px}
-  .beta{display:inline-block;font-size:10.5px;font-family:var(--mono);color:var(--accent);
-        border:1px solid var(--accent);border-radius:2px;padding:1px 6px;vertical-align:middle;margin-left:6px}
+  * { box-sizing: border-box }
+  body { margin: 0; padding: 48px 24px 96px; background: var(--canvas); color: var(--ink); font: 15px/1.5 var(--sans) }
+  .wrap { max-width: 960px; margin: 0 auto }
+  h1 { font-size: clamp(1.5rem, 3vw, 2rem); line-height: 1.15; letter-spacing: -.03em; margin: 0 0 8px }
+  .sub { max-width: 730px; font-size: 14px; color: var(--muted); margin-bottom: 28px }
+  .beta { display: inline-block; font: 600 10px/1 var(--mono); letter-spacing: .08em; color: var(--accent-strong); border: 1px solid color-mix(in srgb, var(--accent) 65%, transparent); border-radius: 999px; padding: 4px 7px; vertical-align: middle; margin-left: 8px }
 
-  .config{background:var(--paper);border:1px solid var(--rule);padding:14px 16px;margin-bottom:18px}
-  .config .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
-  .config label{font-size:12.5px;color:var(--muted);min-width:88px}
-  input[type=password],input[type=text],select{
-    font:inherit;font-size:13px;padding:6px 9px;border:1px solid var(--rule);
-    background:#fff;color:var(--ink);border-radius:2px}
-  input[type=password]{flex:1;min-width:220px;font-family:var(--mono)}
-  .config .row+.row{margin-top:10px}
-  .hint{font-size:11.5px;color:var(--muted);margin-top:8px}
-  .hint a{color:var(--ink)}
-   .drive{background:var(--paper);border:1px solid var(--rule);padding:14px 16px;margin-bottom:18px}
-   .drive .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-   .drive label{font-size:12.5px;color:var(--muted);min-width:88px}
-   #driveUrl{flex:1;min-width:220px}
-   .import-status{font-size:12.5px;color:var(--muted);margin-top:8px}
-   .import-status.error{color:var(--fail)}
-   .import-status.success{color:var(--ok)}
-   .import-files{margin-top:10px;border-top:1px solid var(--rule)}
-   .import-file{display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--rule);font-family:var(--mono);font-size:12px;word-break:break-all}
+  .config, .drive, .card { background: var(--surface); border: 1px solid var(--rule); border-radius: 12px; box-shadow: 0 14px 30px rgba(0, 0, 0, .16) }
+  .config, .drive { padding: 18px; margin-bottom: 16px }
+  .config .row, .drive .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap }
+  .config label, .drive label { color: var(--muted); font-size: 12px; font-weight: 650; letter-spacing: .025em; min-width: 88px }
+  .config .row + .row { margin-top: 12px }
+  input[type=password], input[type=text], input[type=url], select { min-height: 38px; font: inherit; font-size: 13px; padding: 8px 10px; border: 1px solid var(--rule-strong); background: #181a1f; color: var(--ink); border-radius: 8px }
+  input[type=password] { flex: 1; min-width: 220px; font-family: var(--mono) }
+  #driveUrl { flex: 1; min-width: 220px }
+  input::placeholder { color: #858b96; opacity: 1 }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 10px }
+  .hint a, .toggle { color: var(--accent-strong) }
+  .import-status { min-height: 1.5em; font-size: 12.5px; color: var(--muted); margin-top: 10px }
+  .import-status.error { color: var(--fail) }
+  .import-status.success { color: var(--ok) }
+  .import-files { margin-top: 12px; border-top: 1px solid var(--rule) }
+  .import-file { display: flex; align-items: center; gap: 9px; padding: 9px 0; border-bottom: 1px solid var(--rule); font: 12px/1.4 var(--mono); word-break: break-all }
+  input[type=checkbox] { accent-color: var(--accent); width: 16px; height: 16px; flex: 0 0 auto }
 
-  .drop{border:1.5px dashed var(--rule);background:var(--paper);padding:38px 24px;
-        text-align:center;cursor:pointer}
-  .drop.hot{border-style:solid;border-color:var(--ink);background:#fff}
-  .drop .hint2{margin-top:6px;font-size:13px;color:var(--muted)}
-  .drop input{display:none}
+  .drop { border: 1.5px dashed var(--rule-strong); border-radius: 12px; background: var(--surface); padding: 44px 24px; text-align: center; cursor: pointer; transition: border-color .16s ease, background .16s ease, transform .16s ease }
+  .drop:hover, .drop.hot { border-style: solid; border-color: var(--accent); background: var(--surface-raised) }
+  .drop .hint2 { margin-top: 6px; font-size: 13px; color: var(--muted) }
+  .drop input { display: none }
 
-  button{font:inherit;font-size:13px;padding:7px 14px;border:1px solid var(--rule);
-         background:var(--paper);color:var(--ink);border-radius:2px;cursor:pointer}
-  button.primary{background:var(--ink);color:var(--paper);border-color:var(--ink)}
-  button:disabled{opacity:.45;cursor:default}
-  .actions{margin-top:16px;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
-  #count{font-size:12.5px;color:var(--muted)}
+  button { min-height: 38px; font: 650 13px/1 var(--sans); padding: 9px 13px; border: 1px solid var(--rule-strong); background: var(--surface-raised); color: var(--ink); border-radius: 8px; cursor: pointer; transition: background .16s ease, border-color .16s ease, transform .16s ease }
+  button:hover:not(:disabled) { background: #333842; border-color: #697384 }
+  button:active:not(:disabled) { transform: translateY(1px) }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #261714 }
+  button.primary:hover:not(:disabled) { background: var(--accent-strong); border-color: var(--accent-strong) }
+  button:disabled { opacity: .5; cursor: not-allowed }
+  button:focus-visible, input:focus-visible, select:focus-visible, .drop:focus-visible, .toggle:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px }
+  .actions { margin-top: 16px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center }
+  #count { color: var(--muted); font-size: 12.5px }
 
-  .card{background:var(--paper);border:1px solid var(--rule);margin-top:16px}
-  .card-h{display:flex;align-items:center;justify-content:space-between;gap:12px;
-          padding:11px 14px;border-bottom:1px solid var(--rule)}
-  .fname{font-family:var(--mono);font-size:12.5px;font-weight:600;word-break:break-all}
-  .badge{font-size:11px;font-family:var(--mono);padding:2px 8px;border-radius:2px;border:1px solid;white-space:nowrap}
-  .badge.ok{color:var(--ok);border-color:#b9cdbe;background:#eef4ef}
-  .badge.bad{color:var(--fail);border-color:#dcbdb8;background:#f8efed}
-  .badge.warn{color:var(--warn);border-color:#ddd0ac;background:#f8f4e9}
-  .badge.run{color:var(--muted);border-color:var(--rule)}
-  .card-b{padding:12px 14px}
-  .issue{padding:8px 0;border-top:1px solid var(--rule);font-size:13.5px}
-  .issue:first-child{border-top:0}
-  .issue .bad-t{color:var(--fail);font-weight:600}
-  .issue .good-t{color:var(--ok);font-weight:600}
-  .issue .why{color:var(--muted);font-size:12.5px;margin-top:2px}
-  .issue .lang{font-family:var(--mono);font-size:10.5px;color:var(--muted);border:1px solid var(--rule);
-               border-radius:2px;padding:0 5px;margin-left:6px}
-  .extract{margin-top:10px;font-family:var(--mono);font-size:11px;color:var(--muted);
-           max-height:0;overflow:hidden;transition:max-height .2s ease}
-  .extract.on{max-height:200px;overflow:auto;border-top:1px solid var(--rule);padding-top:8px}
-  .toggle{font-size:11.5px;color:var(--muted);cursor:pointer;text-decoration:underline;margin-top:8px;display:inline-block}
-  footer{margin-top:34px;font-size:12.5px;color:var(--muted);line-height:1.6}
-  code{font-family:var(--mono);font-size:.92em}
-  .stage-hidden{position:fixed;left:-9999px;top:0;width:400px;height:600px;border:0}
+  .card { margin-top: 16px; overflow: hidden }
+  .card-h { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 13px 16px; border-bottom: 1px solid var(--rule); background: color-mix(in srgb, var(--surface-raised) 60%, transparent) }
+  .fname { font: 650 12.5px var(--mono); word-break: break-all }
+  .badge { font: 650 10.5px/1.2 var(--mono); padding: 4px 7px; border: 1px solid; border-radius: 999px; white-space: nowrap }
+  .badge.ok { color: var(--ok); border-color: #477957; background: #1d3024 }
+  .badge.bad { color: var(--fail); border-color: #804940; background: #38211f }
+  .badge.warn { color: var(--warn); border-color: #76613a; background: #342d1d }
+  .badge.run { color: var(--muted); border-color: var(--rule-strong); background: #202329 }
+  .card-b { padding: 14px 16px }
+  .issue { padding: 10px 0; border-top: 1px solid var(--rule); font-size: 13.5px }
+  .issue:first-child { border-top: 0 }
+  .issue .bad-t { color: var(--fail); font-weight: 700 }
+  .issue .good-t { color: var(--ok); font-weight: 700 }
+  .issue .why { color: var(--muted); font-size: 12.5px; margin-top: 3px }
+  .issue .lang { font: 10.5px var(--mono); color: var(--muted); border: 1px solid var(--rule-strong); border-radius: 5px; padding: 1px 5px; margin-left: 6px }
+  .extract { margin-top: 10px; font: 11px/1.5 var(--mono); color: var(--muted); max-height: 0; overflow: hidden; transition: max-height .2s ease }
+  .extract.on { max-height: 200px; overflow: auto; border-top: 1px solid var(--rule); padding-top: 8px }
+  .toggle { font-size: 11.5px; cursor: pointer; text-decoration: underline; margin-top: 8px; display: inline-block }
+  footer { max-width: 760px; margin-top: 36px; font-size: 12.5px; color: var(--muted); line-height: 1.65 }
+  code { font-family: var(--mono); font-size: .92em }
+  .stage-hidden { position: fixed; left: -9999px; top: 0; width: 400px; height: 600px; border: 0 }
+
+  @media (max-width: 620px) {
+    body { padding: 28px 16px 64px }
+    .sub { margin-bottom: 22px }
+    .config, .drive { padding: 15px }
+    .config .row, .drive .row { align-items: stretch }
+    .config label, .drive label { width: 100%; min-width: 0 }
+    input[type=password], #driveUrl, #modelCustom { width: 100%; min-width: 0; flex-basis: 100% }
+    .config select { flex: 1 }
+    .drive .row button { width: 100% }
+    .drop { padding: 34px 18px }
+    .actions > button { flex: 1 1 auto }
+    .card-h { align-items: flex-start; flex-direction: column }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { transition-duration: .01ms !important; scroll-behavior: auto !important }
+  }
 </style>
 </head>
 <body>
