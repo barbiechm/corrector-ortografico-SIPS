@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import worker from '../src/worker.mjs';
 
-const folderId = '1FMef5uHhl-yLC7nIeD6aCxJI0185B9lh';
+const folderId = '1Zx9Yw8Vu7Ts6Rqp5OnM';
 const fileId = '1A2b3C4d5E6f7G8h9I0j';
 const env = { GOOGLE_DRIVE_API_KEY: 'test-drive-key' };
 
