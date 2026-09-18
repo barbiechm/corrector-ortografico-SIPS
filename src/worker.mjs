@@ -109,12 +109,37 @@ function driveUrl(pathname, params, apiKey) {
   return url.toString();
 }
 
+function driveError(code, status, message) {
+  return Object.assign(new Error(message), { code, status });
+}
+
 async function fetchDrive(url) {
+  let response;
   try {
-    return await fetch(url, { redirect: 'error' });
+    response = await fetch(url, { redirect: 'manual' });
   } catch {
-    throw new Error('Drive request failed');
+    throw driveError('DRIVE_NETWORK_ERROR', 503, 'Drive could not be reached.');
   }
+  if (response.redirected || (response.status >= 300 && response.status < 400)) {
+    throw driveError('DRIVE_REDIRECT_BLOCKED', 502, 'Drive returned an unexpected redirect.');
+  }
+  return response;
+}
+
+function classifyDriveHttpFailure(response, operation) {
+  if (response.status === 401 || response.status === 403) {
+    return driveError('DRIVE_ACCESS_DENIED', 422, 'Drive denied access to the requested resource.');
+  }
+  if (response.status === 404) {
+    return driveError('DRIVE_RESOURCE_NOT_FOUND', 422, 'The requested Drive resource was not found.');
+  }
+  if (response.status === 429) {
+    return driveError('DRIVE_RATE_LIMITED', 503, 'Drive is temporarily rate-limiting requests.');
+  }
+  if (response.status >= 500) {
+    return driveError('DRIVE_UPSTREAM_UNAVAILABLE', 503, 'Drive is temporarily unavailable.');
+  }
+  return driveError(`DRIVE_${operation}_HTTP_ERROR`, 502, 'Drive rejected the request.');
 }
 
 async function listFolderFiles(folderId, apiKey) {
@@ -124,14 +149,13 @@ async function listFolderFiles(folderId, apiKey) {
     orderBy: 'name',
     pageSize: String(MAX_LISTED_ENTRIES),
     spaces: 'drive',
+    supportsAllDrives: 'true',
+    includeItemsFromAllDrives: 'true',
   }, apiKey);
   const response = await fetchDrive(url);
 
   if (!response.ok) {
-    if (response.status === 403 || response.status === 404) {
-      throw Object.assign(new Error('Folder is unavailable'), { code: 'DRIVE_FOLDER_UNAVAILABLE', status: 422 });
-    }
-    throw Object.assign(new Error('Drive listing failed'), { code: 'DRIVE_LIST_FAILED', status: 502 });
+    throw classifyDriveHttpFailure(response, 'LIST');
   }
 
   let data;
@@ -174,7 +198,7 @@ async function fetchHtmlFile(file, apiKey, totalBytes) {
 
   const response = await fetchDrive(driveUrl(`/drive/v3/files/${file.id}`, { alt: 'media' }, apiKey));
   if (!response.ok) {
-    throw Object.assign(new Error(`Could not download ${file.name}`), { code: 'DRIVE_DOWNLOAD_FAILED', status: 502 });
+    throw classifyDriveHttpFailure(response, 'DOWNLOAD');
   }
 
   const contentLength = Number(response.headers.get('Content-Length'));
