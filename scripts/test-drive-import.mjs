@@ -20,8 +20,8 @@ async function responseBody(response) {
   return JSON.parse(await response.text());
 }
 
-function listing(files) {
-  return Response.json({ files });
+function listing(files, nextPageToken) {
+  return Response.json({ files, ...(nextPageToken ? { nextPageToken } : {}) });
 }
 
 test('lists public-folder HTML metadata without downloading content or exposing the API key', async () => {
@@ -44,6 +44,43 @@ test('lists public-folder HTML metadata without downloading content or exposing 
     assert.equal(calls[0].url.searchParams.get('includeItemsFromAllDrives'), 'true');
     assert.equal(calls[0].options.redirect, 'manual');
     assert.doesNotMatch(JSON.stringify(body), /test-drive-key|safe content/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('follows every Drive listing page without an HTML count cap or content downloads', async () => {
+  const secondPageFileId = '2B3c4D5e6F7g8H9i0J1k';
+  const thirdPageFileId = '3C4d5E6f7G8h9I0j1K2l';
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url) => {
+    const parsed = new URL(url);
+    calls.push(parsed);
+    switch (parsed.searchParams.get('pageToken')) {
+      case null:
+        return listing([{ id: fileId, name: 'first.html', size: '10' }], 'page-2');
+      case 'page-2':
+        return listing([{ id: secondPageFileId, name: 'ignored.txt', size: '20' }], 'page-3');
+      case 'page-3':
+        return listing([{ id: thirdPageFileId, name: 'last.htm', size: '30' }]);
+      default:
+        throw new Error(`Unexpected page token: ${parsed.searchParams.get('pageToken')}`);
+    }
+  };
+
+  try {
+    const response = await worker.fetch(importRequest({ action: 'list' }), env);
+    const body = await responseBody(response);
+    assert.equal(response.status, 200);
+    assert.deepEqual(body.files, [
+      { id: fileId, name: 'first.html', byteLength: 10 },
+      { id: thirdPageFileId, name: 'last.htm', byteLength: 30 },
+    ]);
+    assert.equal(calls.length, 3);
+    assert.deepEqual(calls.map((call) => call.pathname), Array(3).fill('/drive/v3/files'));
+    assert.deepEqual(calls.map((call) => call.searchParams.get('pageToken')), [null, 'page-2', 'page-3']);
+    assert.doesNotMatch(JSON.stringify(body), /test-drive-key/);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -119,6 +156,33 @@ test('rejects selection that is not a current member of the requested folder', a
       message: 'Each selected file must belong to the requested public folder.',
     });
     assert.equal(calls.length, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('validates selected files against every relisted page before downloading', async () => {
+  const secondPageFileId = '2B3c4D5e6F7g8H9i0J1k';
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url) => {
+    const parsed = new URL(url);
+    calls.push(parsed);
+    if (parsed.pathname === '/drive/v3/files' && !parsed.searchParams.get('pageToken')) {
+      return listing([{ id: fileId, name: 'first.html', size: '10' }], 'page-2');
+    }
+    if (parsed.pathname === '/drive/v3/files' && parsed.searchParams.get('pageToken') === 'page-2') {
+      return listing([{ id: secondPageFileId, name: 'selected.html', size: '15' }]);
+    }
+    return new Response('<p>selected</p>');
+  };
+
+  try {
+    const response = await worker.fetch(importRequest({ action: 'download', fileIds: [secondPageFileId] }), env);
+    assert.equal(response.status, 200);
+    assert.deepEqual((await responseBody(response)).files, [{ name: 'selected.html', content: '<p>selected</p>' }]);
+    assert.equal(calls.length, 3);
+    assert.equal(calls[2].searchParams.get('alt'), 'media');
   } finally {
     globalThis.fetch = originalFetch;
   }

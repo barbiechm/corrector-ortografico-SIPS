@@ -79,8 +79,7 @@ El endpoint acepta únicamente enlaces HTTPS con la forma `drive.google.com/driv
 | Límite | Valor |
 | --- | --- |
 | Solicitud al Worker | 4 KiB |
-| Entradas inmediatas de la carpeta | 100 |
-| Archivos HTML listados | 30 |
+| Archivos HTML listados | Todos los de la carpeta pública inmediata (paginado) |
 | Tamaño de cada HTML | 5 MiB |
 | Descargas por respuesta del Worker | 3 |
 

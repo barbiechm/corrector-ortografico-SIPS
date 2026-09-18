@@ -3,8 +3,7 @@ const DRIVE_FOLDER_ID = /^[A-Za-z0-9_-]{10,200}$/;
 const HTML_FILE_NAME = /\.html?$/i;
 
 const MAX_REQUEST_BYTES = 4 * 1024;
-const MAX_LISTED_ENTRIES = 100;
-const MAX_HTML_FILES = 30;
+const DRIVE_LIST_PAGE_SIZE = 100;
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_DOWNLOAD_BATCH_FILES = 3;
 
@@ -142,46 +141,42 @@ function classifyDriveHttpFailure(response, operation) {
 }
 
 async function listFolderFiles(folderId, apiKey) {
-  const url = driveUrl('/drive/v3/files', {
-    q: `'${folderId}' in parents and trashed = false`,
-    fields: 'nextPageToken,files(id,name,size)',
-    orderBy: 'name',
-    pageSize: String(MAX_LISTED_ENTRIES),
-    spaces: 'drive',
-    supportsAllDrives: 'true',
-    includeItemsFromAllDrives: 'true',
-  }, apiKey);
-  const response = await fetchDrive(url);
+  const files = [];
+  let pageToken;
 
-  if (!response.ok) {
-    throw classifyDriveHttpFailure(response, 'LIST');
-  }
+  do {
+    const params = {
+      q: `'${folderId}' in parents and trashed = false`,
+      fields: 'nextPageToken,files(id,name,size)',
+      orderBy: 'name',
+      pageSize: String(DRIVE_LIST_PAGE_SIZE),
+      spaces: 'drive',
+      supportsAllDrives: 'true',
+      includeItemsFromAllDrives: 'true',
+    };
+    if (pageToken) params.pageToken = pageToken;
 
-  let data;
-  try {
-    data = await response.json();
-  } catch {
-    throw Object.assign(new Error('Drive returned an invalid listing'), { code: 'DRIVE_LIST_FAILED', status: 502 });
-  }
+    const response = await fetchDrive(driveUrl('/drive/v3/files', params, apiKey));
+    if (!response.ok) throw classifyDriveHttpFailure(response, 'LIST');
 
-  if (!Array.isArray(data.files) || data.nextPageToken) {
-    throw Object.assign(new Error(`Folders may contain at most ${MAX_LISTED_ENTRIES} immediate entries`), {
-      code: 'FOLDER_TOO_LARGE', status: 422,
-    });
-  }
+    let data;
+    try {
+      data = await response.json();
+    } catch {
+      throw Object.assign(new Error('Drive returned an invalid listing'), { code: 'DRIVE_LIST_FAILED', status: 502 });
+    }
+    if (!Array.isArray(data.files)) {
+      throw Object.assign(new Error('Drive returned an invalid listing'), { code: 'DRIVE_LIST_FAILED', status: 502 });
+    }
 
-  const files = data.files.filter((file) => (
-    typeof file?.id === 'string'
-    && DRIVE_FOLDER_ID.test(file.id)
-    && typeof file?.name === 'string'
-    && HTML_FILE_NAME.test(file.name)
-  ));
-
-  if (files.length > MAX_HTML_FILES) {
-    throw Object.assign(new Error(`Folders may contain at most ${MAX_HTML_FILES} HTML files`), {
-      code: 'TOO_MANY_HTML_FILES', status: 422,
-    });
-  }
+    files.push(...data.files.filter((file) => (
+      typeof file?.id === 'string'
+      && DRIVE_FOLDER_ID.test(file.id)
+      && typeof file?.name === 'string'
+      && HTML_FILE_NAME.test(file.name)
+    )));
+    pageToken = typeof data.nextPageToken === 'string' && data.nextPageToken ? data.nextPageToken : null;
+  } while (pageToken);
 
   return files;
 }
@@ -255,7 +250,7 @@ export default {
         return json(request, env, 200, {
           folderId,
           files: listedFiles.map(publicFileMetadata),
-          limits: { maxFiles: MAX_HTML_FILES, maxFileBytes: MAX_FILE_BYTES, maxDownloadBatchFiles: MAX_DOWNLOAD_BATCH_FILES },
+          limits: { maxFileBytes: MAX_FILE_BYTES, maxDownloadBatchFiles: MAX_DOWNLOAD_BATCH_FILES },
         });
       }
 
