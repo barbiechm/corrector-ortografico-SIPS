@@ -91,7 +91,7 @@ Solo se importan archivos cuyo nombre termine en `.html` o `.htm`. El Worker no 
 - La herramienta revisa texto extraíble del HTML, incluso contenido escapado o `srcdoc` anidado; no analiza texto incrustado en imágenes o MP4.
 - Gemini puede equivocarse. Cada resultado es un candidato para revisión humana; nombres de marca y palabras inventadas pueden ser falsos positivos.
 - La carpeta de Drive debe ser pública y accesible por la API de Drive con la key configurada. Los errores de acceso, listado o descarga se muestran como errores de importación.
-- No se verificó este flujo contra una carpeta pública real, una key de Drive configurada ni un endpoint desplegado. Tampoco se ejecutó una prueba en navegador en este entorno. La comprobación disponible cubrió la configuración y rutas simuladas, no servicios remotos.
+- El Worker está desplegado y su endpoint está configurado en `runtime-config.js`, pero no se verificó el flujo contra una carpeta pública real ni se ejecutó una prueba en navegador. La comprobación disponible cubrió la configuración y rutas simuladas, no una importación real desde Drive.
 
 ## Comprobación antes de publicar
 
