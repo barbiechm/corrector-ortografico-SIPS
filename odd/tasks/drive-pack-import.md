@@ -27,7 +27,7 @@ Importing a complete pack from its source folder makes the tool shareable and re
 ## Delivery
 - Strategy: ask-on-risk.
 - Forecast: three coherent work units, likely below the delivery threshold individually.
-- Git status: no repository exists yet; commits cannot be recorded until Git is initialized by explicit authorization.
+- Git status: repository initialized; DRI-01 is committed as `a519abe` on `feat/drive-pack-import`.
 
 ## Tasks
 
@@ -35,7 +35,7 @@ Importing a complete pack from its source folder makes the tool shareable and re
   - Acceptance: accepts only valid public Drive folder links; lists and fetches only `.html`/`.htm`; validates limits and returns actionable errors; never returns the Drive API key.
   - Checks: worker unit/integration checks where configured; manual request against a public fixture folder; unsafe URL rejection.
 
-- [ ] DRI-02 Add Drive folder import to the UI.
+- [x] DRI-02 Add Drive folder import to the UI.
   - Acceptance: users can paste a folder link, preview/import supported files, choose files, and run the existing spelling flow; Gemini key is not remembered by default; default model is Flash-Lite.
   - Checks: browser smoke test for upload and Drive paths; validation/error-state checks; syntax check.
 
@@ -47,4 +47,5 @@ Importing a complete pack from its source folder makes the tool shareable and re
 - 2026-09-18: Feature tracked before source edits. Existing code is a standalone HTML page with browser-side Gemini calls and heuristic copy extraction.
 - 2026-09-18: DRI-01 implemented in `src/worker.mjs` with the `wrangler.jsonc` Worker configuration. The endpoint accepts only HTTPS `drive.google.com/drive[/u/{number}]/folders/{id}` links, uses the server-side `GOOGLE_DRIVE_API_KEY`, limits folder entries (100), HTML files (25), each file (1 MiB), and total imported content (10 MiB), and returns structured errors with CORS headers. It does not modify the browser UI.
 - 2026-09-18: Observed checks: `node --check "src/worker.mjs"` exited successfully; `npx --no-install wrangler deploy --dry-run` validated the Worker configuration and produced an 8.82 KiB upload dry-run; a local mocked-fetch harness passed both unsafe non-Drive URL rejection (without any upstream request) and valid Drive listing/media import. No public Drive fixture or configured `GOOGLE_DRIVE_API_KEY` was available, so live Drive verification was not run.
-- Next step: DRI-02 and DRI-03 remain intentionally out of scope for this work unit.
+- 2026-09-18: DRI-02 added a versioned, public `runtime-config.js` with an empty Drive endpoint by default; the UI imports and selects returned HTML without rendering it, reports loading/success/error states, deduplicates matching name/content entries, and keeps manual picker/drag-and-drop input. Gemini keys are not stored in localStorage and `gemini-3.5-flash-lite` is the default. Observed checks: a Node DOM/mock-fetch harness compiled the inline UI script and passed manual picker upload, mocked `POST` import response, selected-file addition, duplicate prevention, inert imported HTML, and structured error feedback; `git diff --check` and `node --check "src/worker.mjs"` exited successfully. No browser executable, configured endpoint, Drive credential, or public fixture was available, so browser and live Drive checks were not run.
+- Next step: DRI-03 remains intentionally out of scope for this work unit.
