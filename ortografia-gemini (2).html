@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ortografía · Gemini — beta</title>
+<style>
+  :root {
+    --stone:#e6e4de; --paper:#f7f6f3; --ink:#1f1e1b; --muted:#6f6d66;
+    --rule:#cbc8c0; --ok:#2f6b3e; --fail:#9a2f22; --warn:#8a6a1f; --accent:#f0b429;
+    --mono: ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --sans: system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:36px 24px 90px;background:var(--stone);color:var(--ink);font:15px/1.5 var(--sans)}
+  .wrap{max-width:900px;margin:0 auto}
+  h1{font-size:21px;font-weight:600;margin:0 0 3px}
+  .sub{font-size:13px;color:var(--muted);margin-bottom:22px}
+  .beta{display:inline-block;font-size:10.5px;font-family:var(--mono);color:var(--accent);
+        border:1px solid var(--accent);border-radius:2px;padding:1px 6px;vertical-align:middle;margin-left:6px}
+
+  .config{background:var(--paper);border:1px solid var(--rule);padding:14px 16px;margin-bottom:18px}
+  .config .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+  .config label{font-size:12.5px;color:var(--muted);min-width:88px}
+  input[type=password],input[type=text],select{
+    font:inherit;font-size:13px;padding:6px 9px;border:1px solid var(--rule);
+    background:#fff;color:var(--ink);border-radius:2px}
+  input[type=password]{flex:1;min-width:220px;font-family:var(--mono)}
+  .config .row+.row{margin-top:10px}
+  .hint{font-size:11.5px;color:var(--muted);margin-top:8px}
+  .hint a{color:var(--ink)}
+  .chk{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--muted)}
+
+  .drop{border:1.5px dashed var(--rule);background:var(--paper);padding:38px 24px;
+        text-align:center;cursor:pointer}
+  .drop.hot{border-style:solid;border-color:var(--ink);background:#fff}
+  .drop .hint2{margin-top:6px;font-size:13px;color:var(--muted)}
+  .drop input{display:none}
+
+  button{font:inherit;font-size:13px;padding:7px 14px;border:1px solid var(--rule);
+         background:var(--paper);color:var(--ink);border-radius:2px;cursor:pointer}
+  button.primary{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+  button:disabled{opacity:.45;cursor:default}
+  .actions{margin-top:16px;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  #count{font-size:12.5px;color:var(--muted)}
+
+  .card{background:var(--paper);border:1px solid var(--rule);margin-top:16px}
+  .card-h{display:flex;align-items:center;justify-content:space-between;gap:12px;
+          padding:11px 14px;border-bottom:1px solid var(--rule)}
+  .fname{font-family:var(--mono);font-size:12.5px;font-weight:600;word-break:break-all}
+  .badge{font-size:11px;font-family:var(--mono);padding:2px 8px;border-radius:2px;border:1px solid;white-space:nowrap}
+  .badge.ok{color:var(--ok);border-color:#b9cdbe;background:#eef4ef}
+  .badge.bad{color:var(--fail);border-color:#dcbdb8;background:#f8efed}
+  .badge.warn{color:var(--warn);border-color:#ddd0ac;background:#f8f4e9}
+  .badge.run{color:var(--muted);border-color:var(--rule)}
+  .card-b{padding:12px 14px}
+  .issue{padding:8px 0;border-top:1px solid var(--rule);font-size:13.5px}
+  .issue:first-child{border-top:0}
+  .issue .bad-t{color:var(--fail);font-weight:600}
+  .issue .good-t{color:var(--ok);font-weight:600}
+  .issue .why{color:var(--muted);font-size:12.5px;margin-top:2px}
+  .issue .lang{font-family:var(--mono);font-size:10.5px;color:var(--muted);border:1px solid var(--rule);
+               border-radius:2px;padding:0 5px;margin-left:6px}
+  .extract{margin-top:10px;font-family:var(--mono);font-size:11px;color:var(--muted);
+           max-height:0;overflow:hidden;transition:max-height .2s ease}
+  .extract.on{max-height:200px;overflow:auto;border-top:1px solid var(--rule);padding-top:8px}
+  .toggle{font-size:11.5px;color:var(--muted);cursor:pointer;text-decoration:underline;margin-top:8px;display:inline-block}
+  footer{margin-top:34px;font-size:12.5px;color:var(--muted);line-height:1.6}
+  code{font-family:var(--mono);font-size:.92em}
+  .stage-hidden{position:fixed;left:-9999px;top:0;width:400px;height:600px;border:0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Ortografía vía Gemini <span class="beta">BETA</span></h1>
+  <div class="sub">Extrae el copy del HTML (aunque esté en iframes anidados de la herramienta de banners) y se lo pasa a Gemini para detectar errores ortográficos. Todo en tu navegador.</div>
+
+  <div class="config">
+    <div class="row">
+      <label for="key">API key</label>
+      <input type="password" id="key" placeholder="pega aquí tu Gemini API key" autocomplete="off">
+    </div>
+    <div class="row">
+      <label for="model">Modelo</label>
+      <select id="model">
+        <option value="gemini-3.5-flash" selected>gemini-3.5-flash (recomendado)</option>
+        <option value="gemini-3.6-flash">gemini-3.6-flash (más barato)</option>
+        <option value="gemini-3.5-flash-lite">gemini-3.5-flash-lite (el más barato)</option>
+        <option value="__custom">otro… (escríbelo)</option>
+      </select>
+      <input type="text" id="modelCustom" placeholder="p.ej. gemini-3.7-flash" style="display:none;flex:1;min-width:160px">
+      <label class="chk" style="min-width:auto;margin-left:auto">
+        <input type="checkbox" id="remember"> recordar la key en este equipo
+      </label>
+    </div>
+    <div class="hint">
+      La key se saca en <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>.
+      Se usa solo para llamar a Gemini desde tu navegador; no se envía a ningún otro sitio.
+    </div>
+  </div>
+
+  <div class="drop" id="drop" tabindex="0" role="button">
+    <p style="margin:0">Suelta aquí tus <strong>.html</strong></p>
+    <div class="hint2">o haz clic para elegirlos · puedes soltar varios</div>
+    <input type="file" id="picker" accept=".html,.htm" multiple>
+  </div>
+
+  <div class="actions">
+    <button class="primary" id="run" disabled>Revisar ortografía</button>
+    <button id="clear">Vaciar</button>
+    <span id="count"></span>
+  </div>
+
+  <div id="cards"></div>
+
+  <footer>
+    Beta. Revisa <strong>el texto del HTML</strong>, no el que está quemado dentro del MP4 — eso necesita
+    análisis de imagen y va en una versión siguiente. Gemini puede equivocarse: trata cada aviso como
+    candidato a revisar, no como veredicto. Nombres de marca y palabras inventadas pueden salir como
+    falsos positivos.
+  </footer>
+
+</div>
+
+<script>
+(() => {
+  'use strict';
+
+  const EP = (model) => `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+
+  const keyEl   = document.getElementById('key');
+  const modelEl = document.getElementById('model');
+  const modelCustomEl = document.getElementById('modelCustom');
+  const rememberEl = document.getElementById('remember');
+  const dropEl  = document.getElementById('drop');
+  const picker  = document.getElementById('picker');
+  const runBtn  = document.getElementById('run');
+  const clearBtn= document.getElementById('clear');
+  const countEl = document.getElementById('count');
+  const cardsEl = document.getElementById('cards');
+
+  let items = [];   // { id, name, source, text, status, issues }
+  let seq = 0;
+
+  // ---- recordar la key (solo local, degradado si falla) --------------
+  try {
+    const saved = localStorage.getItem('gemKey');
+    if (saved) { keyEl.value = saved; rememberEl.checked = true; }
+  } catch {}
+  function persistKey() {
+    try {
+      if (rememberEl.checked) localStorage.setItem('gemKey', keyEl.value.trim());
+      else localStorage.removeItem('gemKey');
+    } catch {}
+  }
+  keyEl.addEventListener('change', persistKey);
+  rememberEl.addEventListener('change', persistKey);
+
+  modelEl.addEventListener('change', () => {
+    modelCustomEl.style.display = modelEl.value === '__custom' ? 'block' : 'none';
+  });
+  function currentModel() {
+    return modelEl.value === '__custom' ? (modelCustomEl.value.trim() || 'gemini-3.5-flash') : modelEl.value;
+  }
+
+  // ---- extracción del copy sin renderizar ----------------------------
+  // Estos creativos empaquetan el texto dentro de iframes anidados (srcdoc)
+  // y en HTML escapado varias veces. En vez de renderizar, desescapamos el
+  // archivo y sacamos el texto de cara al usuario que hay entre etiquetas,
+  // filtrando el andamiaje (JS, base64, tokens de la herramienta).
+
+  function decodeEntities(str) {
+    const ta = document.createElement('textarea');
+    ta.innerHTML = str;
+    return ta.value;
+  }
+
+  function looksLikeCopy(t) {
+    t = t.replace(/\s+/g, ' ').trim();
+    if (t.length < 2 || t.length > 120) return false;
+    if (/^(data:|https?:|\/\/|@@|\/\*|\*|\{|\})/.test(t)) return false;
+    if (!/[A-Za-zÁÉÍÓÚÑáéíóúñ]{2,}/.test(t)) return false;
+    // fragmentos técnicos
+    const bad = ['function','var ','const ','return','px','rgb','inset','SPRT',
+                 'CHUNK','window.','document.','://','.js','locale','__',
+                 'node-defs','formatDate','viewBox','translate','opacity'];
+    if (bad.some(b => t.includes(b))) return false;
+    if (/[="';{}]/.test(t)) return false;
+    // proporción mínima de letras
+    const letters = (t.match(/[A-Za-zÁÉÍÓÚÑáéíóúñ]/g) || []).length;
+    if (letters / t.length < 0.4) return false;
+    return true;
+  }
+
+  // Nombres internos que la herramienta mete y no son copy real.
+  function isInternalName(t) {
+    return /^Untitled(_\d+)?$/i.test(t.trim());
+  }
+
+  function extractText(source) {
+    // Desescapar varios niveles (iframe srcdoc anidado).
+    let d = source;
+    for (let i = 0; i < 4; i++) d = decodeEntities(d);
+
+    const seen = new Set();
+    const out = [];
+    // Texto entre > y < que no contenga otras etiquetas ni llaves.
+    const re = /> *([^<>{}]+?) *</g;
+    let m;
+    while ((m = re.exec(d)) !== null) {
+      const t = m[1].replace(/\s+/g, ' ').trim();
+      if (looksLikeCopy(t) && !isInternalName(t) && !seen.has(t)) {
+        seen.add(t);
+        out.push(t);
+      }
+    }
+    return Promise.resolve(out.join('\n'));
+  }
+
+  // ---- llamada a Gemini ----------------------------------------------
+  const PROMPT = `Eres un corrector ortográfico. Te doy el texto visible de un anuncio (creativo publicitario) que puede estar en español y/o inglés. Encuentra SOLO errores ortográficos y de acentuación reales.
+
+Reglas:
+- No corrijas estilo, gramática discutible ni mayúsculas de marketing.
+- Ignora nombres de marca, hashtags, URLs, códigos y palabras claramente inventadas.
+- Si una palabra puede ser correcta en su idioma, no la marques.
+- Detecta el idioma de cada fragmento por su contexto.
+
+Devuelve SOLO un objeto JSON válido, sin texto alrededor ni markdown, con esta forma:
+{"issues":[{"original":"palabra o frase tal cual aparece","suggestion":"corrección","reason":"motivo breve","lang":"es|en"}]}
+Si no hay errores, devuelve {"issues":[]}.
+
+TEXTO:
+`;
+
+  async function checkSpelling(text, model, key) {
+    const body = {
+      contents: [{ parts: [{ text: PROMPT + text }] }],
+      generationConfig: { maxOutputTokens: 2048 }
+    };
+    const res = await fetch(EP(model), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+      body: JSON.stringify(body)
+    });
+    if (!res.ok) {
+      let detail = '';
+      try { detail = (await res.json())?.error?.message || ''; } catch {}
+      throw new Error(`Gemini ${res.status}${detail ? ': ' + detail : ''}`);
+    }
+    const data = await res.json();
+    const raw = data?.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '';
+    const clean = raw.replace(/```json/gi, '').replace(/```/g, '').trim();
+    let parsed;
+    try { parsed = JSON.parse(clean); }
+    catch { throw new Error('Gemini devolvió algo que no es JSON: ' + clean.slice(0, 120)); }
+    return Array.isArray(parsed.issues) ? parsed.issues : [];
+  }
+
+  // ---- render ---------------------------------------------------------
+  function render() {
+    cardsEl.textContent = '';
+    items.forEach(it => cardsEl.appendChild(buildCard(it)));
+    countEl.textContent = items.length ? `${items.length} archivo(s)` : '';
+    runBtn.disabled = items.length === 0;
+  }
+
+  function buildCard(it) {
+    const card = document.createElement('div');
+    card.className = 'card';
+
+    const h = document.createElement('div');
+    h.className = 'card-h';
+    const nm = document.createElement('div');
+    nm.className = 'fname';
+    nm.textContent = it.name;
+    const badge = document.createElement('span');
+
+    if (it.status === 'idle')      { badge.className = 'badge run';  badge.textContent = 'sin revisar'; }
+    else if (it.status === 'running'){ badge.className = 'badge run'; badge.textContent = it.stage || 'revisando…'; }
+    else if (it.status === 'error') { badge.className = 'badge bad';  badge.textContent = 'error'; }
+    else if (it.status === 'done')  {
+      if (it.issues.length === 0)   { badge.className = 'badge ok';   badge.textContent = 'sin errores'; }
+      else                          { badge.className = 'badge warn'; badge.textContent = it.issues.length + ' posible(s)'; }
+    }
+    h.append(nm, badge);
+    card.appendChild(h);
+
+    const b = document.createElement('div');
+    b.className = 'card-b';
+
+    if (it.status === 'error') {
+      b.innerHTML = `<div class="issue"><span class="bad-t">${escapeHtml(it.errorMsg)}</span></div>`;
+    } else if (it.status === 'done') {
+      if (it.issues.length === 0) {
+        b.innerHTML = `<div class="why">No se detectaron errores ortográficos en el texto del HTML.</div>`;
+      } else {
+        it.issues.forEach(iss => {
+          const row = document.createElement('div');
+          row.className = 'issue';
+          row.innerHTML =
+            `<span class="bad-t">${escapeHtml(iss.original || '')}</span> → ` +
+            `<span class="good-t">${escapeHtml(iss.suggestion || '')}</span>` +
+            `<span class="lang">${escapeHtml(iss.lang || '?')}</span>` +
+            `<div class="why">${escapeHtml(iss.reason || '')}</div>`;
+          b.appendChild(row);
+        });
+      }
+      // ver el texto que se extrajo (para depurar)
+      const toggle = document.createElement('span');
+      toggle.className = 'toggle';
+      toggle.textContent = 'ver texto extraído';
+      const pre = document.createElement('div');
+      pre.className = 'extract';
+      pre.textContent = it.text || '(no se extrajo texto — ¿el creativo pinta por JS tardío o todo va en el MP4?)';
+      toggle.onclick = () => {
+        pre.classList.toggle('on');
+        toggle.textContent = pre.classList.contains('on') ? 'ocultar texto' : 'ver texto extraído';
+      };
+      b.append(toggle, pre);
+    } else {
+      b.innerHTML = `<div class="why">Pulsa “Revisar ortografía”.</div>`;
+    }
+
+    card.appendChild(b);
+    return card;
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  // ---- flujo principal -----------------------------------------------
+  async function runAll() {
+    const key = keyEl.value.trim();
+    if (!key) { keyEl.focus(); return alert('Falta la API key.'); }
+    const model = currentModel();
+
+    runBtn.disabled = true;
+    clearBtn.disabled = true;
+
+    for (const it of items) {
+      it.status = 'running'; it.stage = 'leyendo texto…'; render();
+      try {
+        it.text = await extractText(it.source);
+        if (!it.text.trim()) {
+          it.status = 'done'; it.issues = []; render();
+          continue;
+        }
+        it.stage = 'consultando a Gemini…'; render();
+        it.issues = await checkSpelling(it.text, model, key);
+        it.status = 'done';
+      } catch (err) {
+        it.status = 'error';
+        it.errorMsg = err.message;
+      }
+      render();
+    }
+
+    runBtn.disabled = false;
+    clearBtn.disabled = false;
+  }
+
+  // ---- entrada de archivos -------------------------------------------
+  function addFiles(list) {
+    const files = [...list].filter(f => /\.html?$/i.test(f.name));
+    if (!files.length) return;
+    files.sort((a, b) => a.name.localeCompare(b.name, 'es', { numeric: true }));
+    let pending = files.length;
+    files.forEach(file => {
+      const r = new FileReader();
+      r.onload = () => {
+        items.push({ id: 'o' + (++seq), name: file.name, source: String(r.result),
+                     text: '', status: 'idle', issues: [] });
+        if (--pending === 0) render();
+      };
+      r.onerror = () => { if (--pending === 0) render(); };
+      r.readAsText(file);
+    });
+  }
+
+  dropEl.onclick = () => picker.click();
+  dropEl.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); picker.click(); } };
+  picker.onchange = e => { addFiles(e.target.files); picker.value = ''; };
+  ['dragenter','dragover'].forEach(t => dropEl.addEventListener(t, e => { e.preventDefault(); dropEl.classList.add('hot'); }));
+  ['dragleave','drop'].forEach(t => dropEl.addEventListener(t, e => { e.preventDefault(); dropEl.classList.remove('hot'); }));
+  dropEl.addEventListener('drop', e => addFiles(e.dataTransfer.files));
+  window.addEventListener('dragover', e => e.preventDefault());
+  window.addEventListener('drop', e => e.preventDefault());
+
+  runBtn.onclick = runAll;
+  clearBtn.onclick = () => { items = []; render(); };
+})();
+</script>
+</body>
+</html>
