@@ -80,11 +80,11 @@ El endpoint acepta únicamente enlaces HTTPS con la forma `drive.google.com/driv
 | --- | --- |
 | Solicitud al Worker | 4 KiB |
 | Entradas inmediatas de la carpeta | 100 |
-| Archivos HTML por importación | 25 |
-| Tamaño de cada HTML | 1 MiB |
-| Contenido HTML total | 10 MiB |
+| Archivos HTML listados | 30 |
+| Tamaño de cada HTML | 5 MiB |
+| Descargas por respuesta del Worker | 3 |
 
-Solo se importan archivos cuyo nombre termine en `.html` o `.htm`. El Worker no devuelve la key de Drive. La interfaz permite seleccionar los archivos importados antes de agregarlos y evita duplicados por nombre y contenido.
+Solo se importan archivos cuyo nombre termine en `.html` o `.htm`. El contrato de `POST /import` usa `{ "action": "list", "folderUrl": "..." }` para devolver metadatos seguros y `{ "action": "download", "folderUrl": "...", "fileIds": ["..."] }` para una selección de hasta tres IDs. La interfaz permite seleccionar esos archivos y los descarga de a dos; cada solicitud de descarga vuelve a listar la carpeta y rechaza IDs que ya no pertenezcan a ella. Así el Worker nunca devuelve el pack completo ni actúa como descargador arbitrario de Drive. No hay límite agregado para el pack: el guard es de 5 MiB por HTML. El Worker no devuelve la key de Drive y la interfaz evita duplicados por nombre y contenido.
 
 ## Límites de la revisión
 

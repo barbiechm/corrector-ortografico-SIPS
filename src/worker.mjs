@@ -4,9 +4,9 @@ const HTML_FILE_NAME = /\.html?$/i;
 
 const MAX_REQUEST_BYTES = 4 * 1024;
 const MAX_LISTED_ENTRIES = 100;
-const MAX_HTML_FILES = 25;
-const MAX_FILE_BYTES = 1024 * 1024;
-const MAX_TOTAL_BYTES = 10 * 1024 * 1024;
+const MAX_HTML_FILES = 30;
+const MAX_FILE_BYTES = 5 * 1024 * 1024;
+const MAX_DOWNLOAD_BATCH_FILES = 3;
 
 function getCorsHeaders(request, env) {
   const origins = env.ALLOWED_ORIGINS?.split(',').map((origin) => origin.trim()).filter(Boolean) ?? [];
@@ -94,8 +94,7 @@ async function parseRequest(request) {
 
   const bytes = await readLimitedBytes(request.body, MAX_REQUEST_BYTES);
   try {
-    const body = JSON.parse(new TextDecoder().decode(bytes));
-    return extractDriveFolderId(body?.folderUrl);
+    return JSON.parse(new TextDecoder().decode(bytes));
   } catch (cause) {
     if (cause instanceof RangeError) throw cause;
     return null;
@@ -187,13 +186,19 @@ async function listFolderFiles(folderId, apiKey) {
   return files;
 }
 
-async function fetchHtmlFile(file, apiKey, totalBytes) {
+function publicFileMetadata(file) {
+  const byteLength = Number(file.size);
+  return {
+    id: file.id,
+    name: file.name,
+    byteLength: Number.isSafeInteger(byteLength) && byteLength >= 0 ? byteLength : null,
+  };
+}
+
+async function fetchHtmlFile(file, apiKey) {
   const declaredSize = Number(file.size);
   if (Number.isFinite(declaredSize) && declaredSize > MAX_FILE_BYTES) {
-    throw Object.assign(new Error(`${file.name} exceeds the 1 MiB file limit`), { code: 'FILE_TOO_LARGE', status: 422 });
-  }
-  if (Number.isFinite(declaredSize) && totalBytes + declaredSize > MAX_TOTAL_BYTES) {
-    throw Object.assign(new Error(`Imported HTML may not exceed ${MAX_TOTAL_BYTES / 1024 / 1024} MiB in total`), { code: 'PACK_TOO_LARGE', status: 422 });
+    throw Object.assign(new Error(`${file.name} exceeds the 5 MiB file limit`), { code: 'FILE_TOO_LARGE', status: 422 });
   }
 
   const response = await fetchDrive(driveUrl(`/drive/v3/files/${file.id}`, { alt: 'media' }, apiKey));
@@ -203,18 +208,15 @@ async function fetchHtmlFile(file, apiKey, totalBytes) {
 
   const contentLength = Number(response.headers.get('Content-Length'));
   if (Number.isFinite(contentLength) && contentLength > MAX_FILE_BYTES) {
-    throw Object.assign(new Error(`${file.name} exceeds the 1 MiB file limit`), { code: 'FILE_TOO_LARGE', status: 422 });
-  }
-  if (Number.isFinite(contentLength) && totalBytes + contentLength > MAX_TOTAL_BYTES) {
-    throw Object.assign(new Error(`Imported HTML may not exceed ${MAX_TOTAL_BYTES / 1024 / 1024} MiB in total`), { code: 'PACK_TOO_LARGE', status: 422 });
+    throw Object.assign(new Error(`${file.name} exceeds the 5 MiB file limit`), { code: 'FILE_TOO_LARGE', status: 422 });
   }
 
   let bytes;
   try {
-    bytes = await readLimitedBytes(response.body, Math.min(MAX_FILE_BYTES, MAX_TOTAL_BYTES - totalBytes));
+    bytes = await readLimitedBytes(response.body, MAX_FILE_BYTES);
   } catch (cause) {
     if (cause instanceof RangeError) {
-      throw Object.assign(new Error(`${file.name} exceeds the allowed import size`), { code: 'PACK_TOO_LARGE', status: 422 });
+      throw Object.assign(new Error(`${file.name} exceeds the 5 MiB file limit`), { code: 'FILE_TOO_LARGE', status: 422 });
     }
     throw cause;
   }
@@ -232,8 +234,10 @@ export default {
     if (!env.GOOGLE_DRIVE_API_KEY) return error(request, env, 500, 'SERVER_MISCONFIGURED', 'Drive import is not configured.');
 
     let folderId;
+    let body;
     try {
-      folderId = await parseRequest(request);
+      body = await parseRequest(request);
+      folderId = extractDriveFolderId(body?.folderUrl);
     } catch (cause) {
       if (cause instanceof RangeError) return error(request, env, 413, 'REQUEST_TOO_LARGE', 'Request body must not exceed 4 KiB.');
       return error(request, env, 400, 'INVALID_REQUEST', 'Request body must be valid JSON.');
@@ -241,17 +245,40 @@ export default {
     if (!folderId) {
       return error(request, env, 400, 'INVALID_FOLDER_URL', 'Provide an HTTPS drive.google.com folder link.');
     }
+    if (!['list', 'download'].includes(body?.action)) {
+      return error(request, env, 400, 'INVALID_REQUEST', 'Use the list or download import action.');
+    }
 
     try {
       const listedFiles = await listFolderFiles(folderId, env.GOOGLE_DRIVE_API_KEY);
+      if (body.action === 'list') {
+        return json(request, env, 200, {
+          folderId,
+          files: listedFiles.map(publicFileMetadata),
+          limits: { maxFiles: MAX_HTML_FILES, maxFileBytes: MAX_FILE_BYTES, maxDownloadBatchFiles: MAX_DOWNLOAD_BATCH_FILES },
+        });
+      }
+
+      const fileIds = body.fileIds;
+      if (!Array.isArray(fileIds) || fileIds.length === 0 || fileIds.length > MAX_DOWNLOAD_BATCH_FILES
+        || fileIds.some((id) => typeof id !== 'string' || !DRIVE_FOLDER_ID.test(id))) {
+        return error(request, env, 400, 'INVALID_FILE_SELECTION', `Select between 1 and ${MAX_DOWNLOAD_BATCH_FILES} listed HTML files.`);
+      }
+      const uniqueFileIds = [...new Set(fileIds)];
+      if (uniqueFileIds.length !== fileIds.length) {
+        return error(request, env, 400, 'INVALID_FILE_SELECTION', 'Select each HTML file only once per download batch.');
+      }
+      const filesById = new Map(listedFiles.map((file) => [file.id, file]));
+      const selectedFiles = uniqueFileIds.map((id) => filesById.get(id));
+      if (selectedFiles.some((file) => !file)) {
+        return error(request, env, 422, 'FILE_NOT_IN_FOLDER', 'Each selected file must belong to the requested public folder.');
+      }
       const files = [];
-      let totalBytes = 0;
-      for (const file of listedFiles) {
-        const imported = await fetchHtmlFile(file, env.GOOGLE_DRIVE_API_KEY, totalBytes);
-        totalBytes += imported.byteLength;
+      for (const file of selectedFiles) {
+        const imported = await fetchHtmlFile(file, env.GOOGLE_DRIVE_API_KEY);
         files.push({ name: imported.name, content: imported.content });
       }
-      return json(request, env, 200, { files, limits: { maxFiles: MAX_HTML_FILES, maxFileBytes: MAX_FILE_BYTES, maxTotalBytes: MAX_TOTAL_BYTES } });
+      return json(request, env, 200, { files });
     } catch (cause) {
       const status = cause?.status ?? 502;
       const code = cause?.code ?? 'DRIVE_UNAVAILABLE';

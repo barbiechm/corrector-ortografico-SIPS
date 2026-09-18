@@ -111,7 +111,7 @@
       <input type="url" id="driveUrl" placeholder="pega el enlace de la carpeta pública" autocomplete="off">
       <button id="fetchDrive" type="button">Buscar HTML</button>
     </div>
-    <div class="hint">Importa HTML desde una carpeta pública. La importación se configura al publicar esta herramienta.</div>
+    <div class="hint">1. Lista la carpeta pública. 2. Selecciona HTML. 3. Agrégalos: se descargan de a dos para no cargar todo el pack de una vez.</div>
     <div id="importStatus" class="import-status" role="status" aria-live="polite"></div>
     <div id="importFiles" class="import-files" hidden></div>
     <div class="actions" id="importActions" hidden>
@@ -197,7 +197,10 @@
        checkbox.type = 'checkbox';
        checkbox.checked = true;
        checkbox.dataset.index = String(index);
-       label.append(checkbox, document.createTextNode(file.name));
+        const size = Number.isFinite(file.byteLength) ? ` (${(file.byteLength / 1024 / 1024).toFixed(2)} MiB)` : '';
+        const tooLarge = Number.isFinite(file.byteLength) && file.byteLength > 5 * 1024 * 1024;
+        checkbox.disabled = tooLarge;
+        label.append(checkbox, document.createTextNode(`${file.name}${size}${tooLarge ? ' — supera 5 MiB' : ''}`));
        importFilesEl.appendChild(label);
      });
      importFilesEl.hidden = importedFiles.length === 0;
@@ -223,17 +226,17 @@
        const response = await fetch(driveImportEndpoint, {
          method: 'POST',
          headers: { 'Content-Type': 'application/json' },
-         body: JSON.stringify({ folderUrl: driveUrlEl.value.trim() }),
+          body: JSON.stringify({ action: 'list', folderUrl: driveUrlEl.value.trim() }),
        });
        let payload;
        try { payload = await response.json(); } catch { throw new Error('La importación devolvió una respuesta inválida.'); }
        if (!response.ok) throw new Error(payload?.error?.message || `La importación falló (${response.status}).`);
        if (!Array.isArray(payload?.files)) throw new Error('La importación devolvió archivos inválidos.');
-       importedFiles = payload.files.filter(file => (
-         typeof file?.name === 'string' && /\.html?$/i.test(file.name) && typeof file?.content === 'string'
-       ));
+        importedFiles = payload.files.filter(file => (
+          typeof file?.id === 'string' && typeof file?.name === 'string' && /\.html?$/i.test(file.name)
+        ));
        renderImportedFiles();
-       setImportStatus(importedFiles.length ? `${importedFiles.length} archivo(s) listo(s) para agregar.` : 'No se encontraron archivos HTML.', importedFiles.length ? 'success' : '');
+        setImportStatus(importedFiles.length ? `${importedFiles.length} archivo(s) listados. Selecciona cuáles agregar.` : 'No se encontraron archivos HTML.', importedFiles.length ? 'success' : '');
      } catch (err) {
        setImportStatus(err.message || 'No se pudo importar la carpeta.', 'error');
      } finally {
@@ -241,18 +244,41 @@
      }
    }
 
-   function addImportedFiles() {
-     const selected = [...importFilesEl.querySelectorAll('input:checked')]
-       .map(input => importedFiles[Number(input.dataset.index)])
-       .filter(Boolean);
-     let added = 0;
-     selected.forEach(file => {
-       if (duplicateExists(file.name, file.content)) return;
-       items.push({ id: 'o' + (++seq), name: file.name, source: file.content, text: '', status: 'idle', issues: [] });
-       added++;
-     });
-     render();
-     setImportStatus(added ? `${added} archivo(s) agregado(s).` : 'Los archivos seleccionados ya estaban cargados.', added ? 'success' : '');
+    async function addImportedFiles() {
+      const selected = [...importFilesEl.querySelectorAll('input:checked')]
+        .map(input => importedFiles[Number(input.dataset.index)])
+        .filter(Boolean);
+      if (!selected.length) {
+        setImportStatus('Selecciona al menos un HTML para agregar.', 'error');
+        return;
+      }
+      addImportedBtn.disabled = true;
+      let added = 0;
+      try {
+        for (let start = 0; start < selected.length; start += 2) {
+          const batch = selected.slice(start, start + 2);
+          setImportStatus(`Descargando ${Math.min(start + batch.length, selected.length)} de ${selected.length} HTML…`);
+          const response = await fetch(driveImportEndpoint, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'download', folderUrl: driveUrlEl.value.trim(), fileIds: batch.map(file => file.id) }),
+          });
+          let payload;
+          try { payload = await response.json(); } catch { throw new Error('La descarga devolvió una respuesta inválida.'); }
+          if (!response.ok) throw new Error(payload?.error?.message || `La descarga falló (${response.status}).`);
+          if (!Array.isArray(payload?.files)) throw new Error('La descarga devolvió archivos inválidos.');
+          payload.files.forEach(file => {
+            if (typeof file?.name !== 'string' || typeof file?.content !== 'string' || duplicateExists(file.name, file.content)) return;
+            items.push({ id: 'o' + (++seq), name: file.name, source: file.content, text: '', status: 'idle', issues: [] });
+            added++;
+          });
+          render();
+        }
+        setImportStatus(added ? `${added} archivo(s) agregado(s).` : 'Los archivos seleccionados ya estaban cargados.', added ? 'success' : '');
+      } catch (err) {
+        setImportStatus(err.message || 'No se pudieron descargar los archivos seleccionados.', 'error');
+      } finally {
+        addImportedBtn.disabled = false;
+      }
    }
 
    if (!driveImportEndpoint) {
