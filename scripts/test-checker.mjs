@@ -179,3 +179,21 @@ test('describeDriveError maps known Worker codes to Spanish and falls back other
   assert.equal(OC.describeDriveError('FILE_TOO_LARGE'), OC.DRIVE_ERROR_MESSAGES.FILE_TOO_LARGE);
   assert.equal(OC.describeDriveError('SOME_UNKNOWN_CODE', 'raw english message'), 'raw english message');
 });
+
+test('extraction ignores script assets, styles, title and comments at every nested level', () => {
+  const inner = '<title>internal_project_name_03</title><p>Buy Now</p>'
+    + '<script type="text/sprt-asset">/* => the document\'s own <html lang> */</script>'
+    + '<style>.x{}</style><!-- Hidden note here -->';
+  const outer = `<iframe srcdoc="${inner.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')}"></iframe>`
+    + '<title>outer_title_name</title>';
+  const text = OC.extractText(outer, decodeEntities);
+  assert.equal(text, 'Buy Now');
+});
+
+test('normalizeIssues drops findings whose suggestion equals the original', () => {
+  const issues = OC.normalizeIssues([
+    { original: "the document's own", suggestion: "the document's own ", type: 'suggestion' },
+    { original: 'Ola', suggestion: 'Hola', type: 'error' },
+  ]);
+  assert.deepEqual(issues.map(issue => issue.original), ['Ola']);
+});

@@ -82,8 +82,24 @@
     return d;
   }
 
+  // Bloques que nunca son copy visible: código (incluidos los assets JS que la
+  // herramienta guarda como <script type="text/sprt-asset">), estilos, el
+  // <title> interno y comentarios. Se quitan en cada nivel de desescapado,
+  // antes de que el siguiente nivel exponga el HTML anidado.
+  const NON_COPY_BLOCK_RE = /<(script|style|title|noscript|template)\b[^>]*>[\s\S]*?<\/\1\s*>|<!--[\s\S]*?-->/gi;
+
+  function stripNonCopyBlocks(html) {
+    return html.replace(NON_COPY_BLOCK_RE, ' ');
+  }
+
+  function decodeForCopy(source, decodeEntities) {
+    let d = stripNonCopyBlocks(source);
+    for (let i = 0; i < 4; i++) d = stripNonCopyBlocks(decodeEntities(d));
+    return d;
+  }
+
   function extractText(source, decodeEntities) {
-    const d = stripInlineTags(decodeMultiple(source, decodeEntities));
+    const d = stripInlineTags(decodeForCopy(source, decodeEntities));
 
     const seen = new Set();
     const out = [];
@@ -205,6 +221,7 @@ Reglas:
 - No corrijas mayúsculas de marketing.
 - Ignora nombres de marca, hashtags, URLs, códigos y palabras claramente inventadas.
 - Si una palabra o frase puede ser correcta, no la marques como error; a lo sumo, como sugerencia.
+- No devuelvas hallazgos cuya corrección sea idéntica al original, ni comentarios sobre el contexto o el tono: solo cambios concretos al texto.
 - Detecta el idioma de cada fragmento por su contexto.
 
 Devuelve SOLO un objeto JSON válido, sin texto alrededor ni markdown, con esta forma:
@@ -220,6 +237,7 @@ TEXTO:
 - "suggestion": mejoras opcionales de gramática, puntuación o claridad. NO cuentan como errores.
 - Ignora nombres de marca, hashtags, URLs, códigos y palabras claramente inventadas.
 - Si un texto puede ser correcto, no lo marques como error; a lo sumo, como sugerencia.
+- No devuelvas hallazgos cuya corrección sea idéntica al original, ni comentarios sobre el contexto o el tono: solo cambios concretos al texto.
 
 Para cada hallazgo, usa "original" con el texto tal cual aparece en la imagen o el video, y "source" con "image" o "video" según corresponda.
 
@@ -285,7 +303,9 @@ Si no hay hallazgos, devuelve {"issues":[]}.
     return raw
       .filter((issue) => issue
         && typeof issue.original === 'string' && issue.original
-        && typeof issue.suggestion === 'string' && issue.suggestion)
+        && typeof issue.suggestion === 'string' && issue.suggestion
+        // Un hallazgo que "corrige" el texto por sí mismo no aporta nada.
+        && issue.suggestion.trim() !== issue.original.trim())
       .map((issue) => ({
         original: issue.original,
         suggestion: issue.suggestion,
