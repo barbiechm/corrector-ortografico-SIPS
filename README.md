@@ -4,11 +4,11 @@ Revisa el texto extraído de archivos HTML con Gemini y, si se configura un Work
 
 ## Ruta rápida: uso local sin importar desde Drive
 
-1. Abre `ortografia-gemini (2).html` en un navegador.
-2. Arrastra o selecciona los archivos `.html` o `.htm` del SIP.
-3. Pega tu clave de Gemini, deja seleccionado `gemini-3.5-flash-lite` o elige otro modelo, y selecciona **Revisar ortografía**.
+1. Abre `index.html` en un navegador.
+2. Pega tu clave de Gemini y deja seleccionado `gemini-3.5-flash-lite` o elige otro modelo.
+3. Arrastra o selecciona los archivos `.html` o `.htm` del SIP: se revisan automáticamente en cuanto se cargan. **Volver a revisar todo** repite la revisión.
 
-La clave de Gemini se usa desde el navegador para llamar a Gemini. La aplicación no la guarda en `localStorage`, no la envía al Worker y no debe incluirse en archivos del repositorio.
+La clave de Gemini se usa desde el navegador para llamar a Gemini. La aplicación la guarda en el `localStorage` de ese navegador para no pedirla en cada recarga; **Olvidar key** la borra. No la envía al Worker y no debe incluirse en archivos del repositorio. En equipos compartidos, bórrala al terminar: cualquier script que corra en el mismo origen puede leer `localStorage`.
 
 Cada persona debe usar y pagar su propia clave de Gemini. La persona propietaria puede compartir la suya de forma temporal, bajo su propia decisión y responsabilidad; no es un mecanismo de cuentas, cuotas ni facturación compartidas.
 
@@ -48,7 +48,7 @@ window.ORTHOGRAPHY_RUNTIME_CONFIG = Object.freeze({
 });
 ```
 
-Después abre `ortografia-gemini (2).html` y pega un enlace público de carpeta de Google Drive. Deja el endpoint vacío para desactivar la importación de Drive. No hay un servidor estático configurado en este repositorio; la ruta de uso local anterior abre el HTML directamente.
+Después abre `index.html` y pega un enlace público de carpeta de Google Drive. Deja el endpoint vacío para desactivar la importación de Drive. No hay un servidor estático configurado en este repositorio; la ruta de uso local anterior abre el HTML directamente.
 
 ## Despliegue remoto del Worker en Cloudflare
 
@@ -83,18 +83,19 @@ El endpoint acepta únicamente enlaces HTTPS con la forma `drive.google.com/driv
 | Tamaño de cada HTML | 5 MiB |
 | Descargas por respuesta del Worker | 3 |
 
-Solo se importan archivos cuyo nombre termine en `.html` o `.htm`. El contrato de `POST /import` usa `{ "action": "list", "folderUrl": "..." }` para devolver metadatos seguros y `{ "action": "download", "folderUrl": "...", "fileIds": ["..."] }` para una selección de hasta tres IDs. La interfaz permite seleccionar esos archivos y los descarga de a dos; cada solicitud de descarga vuelve a listar la carpeta y rechaza IDs que ya no pertenezcan a ella. Así el Worker nunca devuelve el pack completo ni actúa como descargador arbitrario de Drive. No hay límite agregado para el pack: el guard es de 5 MiB por HTML. El Worker no devuelve la key de Drive y la interfaz evita duplicados por nombre y contenido.
+Solo se importan archivos cuyo nombre termine en `.html` o `.htm`. El contrato de `POST /import` usa `{ "action": "list", "folderUrl": "..." }` para devolver metadatos seguros y `{ "action": "download", "folderUrl": "...", "fileIds": ["..."] }` para una selección de hasta tres IDs. Al pegar el enlace, la interfaz lista la carpeta, descarga automáticamente todos los HTML de hasta 5 MiB de a dos y los revisa a medida que llegan; cada solicitud de descarga vuelve a listar la carpeta y rechaza IDs que ya no pertenezcan a ella. Así el Worker nunca devuelve el pack completo ni actúa como descargador arbitrario de Drive. No hay límite agregado para el pack: el guard es de 5 MiB por HTML. El Worker no devuelve la key de Drive y la interfaz evita duplicados por nombre y contenido.
 
 ## Límites de la revisión
 
-- La herramienta revisa texto extraíble del HTML, incluso contenido escapado o `srcdoc` anidado; no analiza texto incrustado en imágenes o MP4.
+- La herramienta revisa texto extraíble del HTML, incluso contenido escapado o `srcdoc` anidado. Si un HTML no tiene texto extraíble, revisa como respaldo las imágenes y el video embebidos como `data:` base64 en ese mismo archivo (hasta 6 imágenes y 1 video, con un presupuesto total de ~14 MiB); no descarga imágenes ni video desde URLs externas. Ese análisis visual consume más tokens de Gemini (aprox. 560 por imagen y 70 por fotograma de video).
+- Gemini clasifica cada hallazgo como **error** (ortografía, acentuación o gramática claramente incorrecta) o como **sugerencia** (mejoras opcionales de gramática, puntuación o claridad); las sugerencias se muestran aparte y no cuentan como errores.
 - Gemini puede equivocarse. Cada resultado es un candidato para revisión humana; nombres de marca y palabras inventadas pueden ser falsos positivos.
-- La carpeta de Drive debe ser pública y accesible por la API de Drive con la key configurada. Los errores de acceso, listado o descarga se muestran como errores de importación.
+- La carpeta de Drive debe ser pública y accesible por la API de Drive con la key configurada. Los errores de acceso, listado o descarga se muestran como errores de importación, traducidos al español cuando el Worker devuelve un código reconocido.
 - El Worker está desplegado y su endpoint está configurado en `runtime-config.js`, pero no se verificó el flujo contra una carpeta pública real ni se ejecutó una prueba en navegador. La comprobación disponible cubrió la configuración y rutas simuladas, no una importación real desde Drive.
 
 ## Comprobación antes de publicar
 
 - Confirma que `runtime-config.js` contiene solo la URL pública de `/import`, nunca secretos.
 - Confirma que la key de Drive está restringida a Google Drive API y cargada como secreto de Cloudflare.
-- Confirma que cada persona proporciona su propia key de Gemini y que no se persiste.
+- Confirma que cada persona proporciona su propia key de Gemini; se guarda solo en su navegador y se borra con **Olvidar key**.
 - Prueba una carpeta pública pequeña con archivos HTML antes de compartir el enlace de la herramienta.

@@ -9,7 +9,7 @@
     --canvas: #17191d; --surface: #202329; --surface-raised: #282c33;
     --ink: #f2f0ed; --muted: #aaaeb7; --rule: #3b414b; --rule-strong: #555d6b;
     --ok: #9bd5af; --fail: #ff9a8d; --warn: #f2cc83; --accent: #ff7d6e;
-    --accent-strong: #ff968a; --focus: #ffe09a;
+    --accent-strong: #ff968a; --focus: #ffe09a; --info: #9cc3f5;
     --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
     --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   }
@@ -34,8 +34,6 @@
   .import-status { min-height: 1.5em; font-size: 12.5px; color: var(--muted); margin-top: 10px }
   .import-status.error { color: var(--fail) }
   .import-status.success { color: var(--ok) }
-  .import-files { margin-top: 12px; border-top: 1px solid var(--rule) }
-  .import-file { display: flex; align-items: center; gap: 9px; padding: 9px 0; border-bottom: 1px solid var(--rule); font: 12px/1.4 var(--mono); word-break: break-all }
   input[type=checkbox] { accent-color: var(--accent); width: 16px; height: 16px; flex: 0 0 auto }
 
   .drop { border: 1.5px dashed var(--rule-strong); border-radius: 12px; background: var(--surface); padding: 44px 24px; text-align: center; cursor: pointer; transition: border-color .16s ease, background .16s ease, transform .16s ease }
@@ -65,9 +63,11 @@
   .issue { padding: 10px 0; border-top: 1px solid var(--rule); font-size: 13.5px }
   .issue:first-child { border-top: 0 }
   .issue .bad-t { color: var(--fail); font-weight: 700 }
+  .issue .sugg-t { color: var(--info); font-weight: 700 }
   .issue .good-t { color: var(--ok); font-weight: 700 }
   .issue .why { color: var(--muted); font-size: 12.5px; margin-top: 3px }
   .issue .lang { font: 10.5px var(--mono); color: var(--muted); border: 1px solid var(--rule-strong); border-radius: 5px; padding: 1px 5px; margin-left: 6px }
+  .issue.suggestion .lang.type { color: var(--info); border-color: color-mix(in srgb, var(--info) 55%, transparent) }
   .extract { margin-top: 10px; font: 11px/1.5 var(--mono); color: var(--muted); max-height: 0; overflow: hidden; transition: max-height .2s ease }
   .extract.on { max-height: 200px; overflow: auto; border-top: 1px solid var(--rule); padding-top: 8px }
   .toggle { font-size: 11.5px; cursor: pointer; text-decoration: underline; margin-top: 8px; display: inline-block }
@@ -104,6 +104,7 @@
     <div class="row">
       <label for="key">API key</label>
       <input type="password" id="key" placeholder="pega aquí tu Gemini API key" autocomplete="off">
+      <button id="forgetKey" type="button">Olvidar key</button>
     </div>
     <div class="row">
       <label for="model">Modelo</label>
@@ -117,32 +118,30 @@
     </div>
     <div class="hint">
       La key se saca en <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>.
-      Se usa solo para llamar a Gemini desde tu navegador; no se envía a ningún otro sitio.
+      Se guarda en este navegador para no tener que pegarla otra vez y solo se usa para llamar a Gemini;
+      no se envía a ningún otro sitio. En un equipo compartido, pulsa “Olvidar key” al terminar.
     </div>
+    <div id="keyStatus" class="import-status" role="status" aria-live="polite"></div>
   </div>
 
   <div class="drive" id="driveImport">
     <div class="row">
       <label for="driveUrl">Carpeta de Drive</label>
       <input type="url" id="driveUrl" placeholder="pega el enlace de la carpeta pública" autocomplete="off">
-      <button id="fetchDrive" type="button">Buscar HTML</button>
+      <button id="fetchDrive" type="button">Revisar carpeta</button>
     </div>
-    <div class="hint">1. Lista la carpeta pública. 2. Selecciona HTML. 3. Agrégalos: se descargan de a dos para no cargar todo el pack de una vez.</div>
+    <div class="hint">Pega el enlace y se revisan automáticamente todos los HTML de la carpeta (se descargan de a dos).</div>
     <div id="importStatus" class="import-status" role="status" aria-live="polite"></div>
-    <div id="importFiles" class="import-files" hidden></div>
-    <div class="actions" id="importActions" hidden>
-      <button id="addImported" type="button">Agregar seleccionados</button>
-    </div>
   </div>
 
   <div class="drop" id="drop" tabindex="0" role="button">
     <p style="margin:0">Suelta aquí tus <strong>.html</strong></p>
-    <div class="hint2">o haz clic para elegirlos · puedes soltar varios</div>
+    <div class="hint2">o haz clic para elegirlos · se revisan al instante</div>
     <input type="file" id="picker" accept=".html,.htm" multiple>
   </div>
 
   <div class="actions">
-    <button class="primary" id="run" disabled>Revisar ortografía</button>
+    <button class="primary" id="run" disabled>Volver a revisar todo</button>
     <button id="clear">Vaciar</button>
     <span id="count"></span>
   </div>
@@ -150,163 +149,187 @@
   <div id="cards"></div>
 
   <footer>
-    Beta. Revisa <strong>el texto del HTML</strong>, no el que está quemado dentro del MP4 — eso necesita
-    análisis de imagen y va en una versión siguiente. Gemini puede equivocarse: trata cada aviso como
-    candidato a revisar, no como veredicto. Nombres de marca y palabras inventadas pueden salir como
-    falsos positivos.
+    Beta. Revisa <strong>el texto del HTML</strong>, incluso contenido escapado o en iframes anidados
+    (<code>srcdoc</code>). Si un HTML no tiene texto extraíble, revisa como respaldo las imágenes y el
+    video embebidos como <code>data:</code> base64 en el mismo archivo; no descarga imágenes ni video
+    desde URLs externas, y ese análisis visual consume más tokens de Gemini (aprox. 560 por imagen y 70
+    por fotograma de video). Gemini puede equivocarse: trata cada aviso como candidato a revisar, no
+    como veredicto. Los errores se listan aparte de las sugerencias opcionales. Nombres de marca y
+    palabras inventadas pueden salir como falsos positivos.
   </footer>
 
 </div>
 
 <script src="runtime-config.js"></script>
+<script src="checker.js"></script>
 <script>
 (() => {
   'use strict';
 
-  const EP = (model) => `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+  const OC = window.OrthographyChecker;
 
-   const keyEl   = document.getElementById('key');
-   const modelEl = document.getElementById('model');
-   const modelCustomEl = document.getElementById('modelCustom');
-   const driveUrlEl = document.getElementById('driveUrl');
-   const fetchDriveBtn = document.getElementById('fetchDrive');
-   const importStatusEl = document.getElementById('importStatus');
-   const importFilesEl = document.getElementById('importFiles');
-   const importActionsEl = document.getElementById('importActions');
-   const addImportedBtn = document.getElementById('addImported');
-  const dropEl  = document.getElementById('drop');
-  const picker  = document.getElementById('picker');
-  const runBtn  = document.getElementById('run');
-  const clearBtn= document.getElementById('clear');
+  const keyEl = document.getElementById('key');
+  const modelEl = document.getElementById('model');
+  const modelCustomEl = document.getElementById('modelCustom');
+  const driveUrlEl = document.getElementById('driveUrl');
+  const fetchDriveBtn = document.getElementById('fetchDrive');
+  const importStatusEl = document.getElementById('importStatus');
+  const forgetKeyBtn = document.getElementById('forgetKey');
+  const keyStatusEl = document.getElementById('keyStatus');
+  const dropEl = document.getElementById('drop');
+  const picker = document.getElementById('picker');
+  const runBtn = document.getElementById('run');
+  const clearBtn = document.getElementById('clear');
   const countEl = document.getElementById('count');
   const cardsEl = document.getElementById('cards');
 
-   let items = [];   // { id, name, source, text, status, issues }
-   let seq = 0;
-   let importedFiles = [];
-   const runtimeConfig = window.ORTHOGRAPHY_RUNTIME_CONFIG || {};
-   const driveImportEndpoint = typeof runtimeConfig.driveImportEndpoint === 'string'
-     ? runtimeConfig.driveImportEndpoint.trim() : '';
+  let items = [];   // { id, name, source, text, status, issues, mode, mediaCount }
+  let seq = 0;
+  let running = false;
+  let importing = false;
+  let lastImportedUrl = '';
+  const runtimeConfig = window.ORTHOGRAPHY_RUNTIME_CONFIG || {};
+  const driveImportEndpoint = typeof runtimeConfig.driveImportEndpoint === 'string'
+    ? runtimeConfig.driveImportEndpoint.trim() : '';
 
-   modelEl.addEventListener('change', () => {
+  modelEl.addEventListener('change', () => {
     modelCustomEl.style.display = modelEl.value === '__custom' ? 'block' : 'none';
   });
-   function currentModel() {
-     return modelEl.value === '__custom' ? (modelCustomEl.value.trim() || 'gemini-3.5-flash-lite') : modelEl.value;
-   }
+  function currentModel() {
+    return modelEl.value === '__custom' ? (modelCustomEl.value.trim() || 'gemini-3.5-flash-lite') : modelEl.value;
+  }
 
-   function setImportStatus(message, state = '') {
-     importStatusEl.textContent = message;
-     importStatusEl.className = `import-status${state ? ' ' + state : ''}`;
-   }
+  // ---- key persistente -----------------------------------------------------
+  // localStorage puede no estar disponible (modo privado, file:// bloqueado):
+  // la app sigue funcionando, solo sin recordar la key.
+  const KEY_STORAGE = 'orthography.geminiKey';
 
-   function duplicateExists(name, source) {
-     return items.some(item => item.name === name && item.source === source);
-   }
+  function loadStoredKey() {
+    try { return localStorage.getItem(KEY_STORAGE) || ''; } catch { return ''; }
+  }
 
-   function renderImportedFiles() {
-     importFilesEl.textContent = '';
-     importedFiles.forEach((file, index) => {
-       const label = document.createElement('label');
-       label.className = 'import-file';
-       const checkbox = document.createElement('input');
-       checkbox.type = 'checkbox';
-       checkbox.checked = true;
-       checkbox.dataset.index = String(index);
-        const size = Number.isFinite(file.byteLength) ? ` (${(file.byteLength / 1024 / 1024).toFixed(2)} MiB)` : '';
-        const tooLarge = Number.isFinite(file.byteLength) && file.byteLength > 5 * 1024 * 1024;
-        checkbox.disabled = tooLarge;
-        label.append(checkbox, document.createTextNode(`${file.name}${size}${tooLarge ? ' — supera 5 MiB' : ''}`));
-       importFilesEl.appendChild(label);
-     });
-     importFilesEl.hidden = importedFiles.length === 0;
-     importActionsEl.hidden = importedFiles.length === 0;
-   }
+  function storeKey(value) {
+    try {
+      if (value) localStorage.setItem(KEY_STORAGE, value);
+      else localStorage.removeItem(KEY_STORAGE);
+    } catch {}
+  }
 
-   async function fetchDriveFiles() {
-     if (!driveImportEndpoint) {
-       setImportStatus('La importación de Drive no está configurada.', 'error');
-       return;
-     }
-     if (!driveUrlEl.value.trim()) {
-       driveUrlEl.focus();
-       setImportStatus('Pega el enlace de una carpeta pública de Drive.', 'error');
-       return;
-     }
+  function setKeyStatus(message, state = '') {
+    keyStatusEl.textContent = message;
+    keyStatusEl.className = `import-status${state ? ' ' + state : ''}`;
+  }
 
-     fetchDriveBtn.disabled = true;
-     importedFiles = [];
-     renderImportedFiles();
-     setImportStatus('Buscando archivos HTML…');
-     try {
-       const response = await fetch(driveImportEndpoint, {
-         method: 'POST',
-         headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'list', folderUrl: driveUrlEl.value.trim() }),
-       });
-       let payload;
-       try { payload = await response.json(); } catch { throw new Error('La importación devolvió una respuesta inválida.'); }
-       if (!response.ok) throw new Error(payload?.error?.message || `La importación falló (${response.status}).`);
-       if (!Array.isArray(payload?.files)) throw new Error('La importación devolvió archivos inválidos.');
-        importedFiles = payload.files.filter(file => (
-          typeof file?.id === 'string' && typeof file?.name === 'string' && /\.html?$/i.test(file.name)
-        ));
-       renderImportedFiles();
-        setImportStatus(importedFiles.length ? `${importedFiles.length} archivo(s) listados. Selecciona cuáles agregar.` : 'No se encontraron archivos HTML.', importedFiles.length ? 'success' : '');
-     } catch (err) {
-       setImportStatus(err.message || 'No se pudo importar la carpeta.', 'error');
-     } finally {
-       fetchDriveBtn.disabled = false;
-     }
-   }
+  keyEl.value = loadStoredKey();
+  keyEl.addEventListener('input', () => {
+    storeKey(keyEl.value.trim());
+    if (keyEl.value.trim()) setKeyStatus('');
+  });
+  keyEl.addEventListener('change', () => processPending());
+  forgetKeyBtn.onclick = () => {
+    keyEl.value = '';
+    storeKey('');
+    setKeyStatus('Key eliminada de este navegador.');
+  };
 
-    async function addImportedFiles() {
-      const selected = [...importFilesEl.querySelectorAll('input:checked')]
-        .map(input => importedFiles[Number(input.dataset.index)])
-        .filter(Boolean);
+  function setImportStatus(message, state = '') {
+    importStatusEl.textContent = message;
+    importStatusEl.className = `import-status${state ? ' ' + state : ''}`;
+  }
+
+  function duplicateExists(name, source) {
+    return items.some(item => item.name === name && item.source === source);
+  }
+
+  const MAX_IMPORT_FILE_BYTES = 5 * 1024 * 1024;
+  const DRIVE_FOLDER_URL = /^https:\/\/drive\.google\.com\/drive(?:\/u\/\d+)?\/folders\/[A-Za-z0-9_-]{10,200}\/?(?:[?#].*)?$/;
+
+  async function postImport(body, invalidMessage, failMessage) {
+    const response = await fetch(driveImportEndpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    let payload;
+    try { payload = await response.json(); } catch { throw new Error(invalidMessage); }
+    if (!response.ok) {
+      throw new Error(OC.describeDriveError(payload?.error?.code, payload?.error?.message) || `${failMessage} (${response.status}).`);
+    }
+    if (!Array.isArray(payload?.files)) throw new Error(invalidMessage);
+    return payload.files;
+  }
+
+  // Lista la carpeta, descarga todos los HTML de a dos y los va revisando
+  // a medida que llegan, sin pasos intermedios.
+  async function importDriveFolder({ force = false } = {}) {
+    if (!driveImportEndpoint) {
+      setImportStatus('La importación de Drive no está configurada.', 'error');
+      return;
+    }
+    const folderUrl = driveUrlEl.value.trim();
+    if (!folderUrl) {
+      driveUrlEl.focus();
+      setImportStatus('Pega el enlace de una carpeta pública de Drive.', 'error');
+      return;
+    }
+    if (!DRIVE_FOLDER_URL.test(folderUrl)) {
+      setImportStatus('El enlace debe ser de una carpeta de Drive (drive.google.com/drive/folders/…).', 'error');
+      return;
+    }
+    if (importing || (!force && folderUrl === lastImportedUrl)) return;
+
+    importing = true;
+    lastImportedUrl = folderUrl;
+    fetchDriveBtn.disabled = true;
+    setImportStatus('Buscando archivos HTML…');
+    let added = 0;
+    try {
+      const listed = (await postImport({ action: 'list', folderUrl },
+        'La importación devolvió una respuesta inválida.', 'La importación falló'))
+        .filter(file => typeof file?.id === 'string' && typeof file?.name === 'string' && /\.html?$/i.test(file.name));
+      const tooLarge = listed.filter(file => Number.isFinite(file.byteLength) && file.byteLength > MAX_IMPORT_FILE_BYTES);
+      const selected = listed.filter(file => !tooLarge.includes(file));
       if (!selected.length) {
-        setImportStatus('Selecciona al menos un HTML para agregar.', 'error');
+        setImportStatus(tooLarge.length ? 'Todos los HTML de la carpeta superan 5 MiB.' : 'No se encontraron archivos HTML.', tooLarge.length ? 'error' : '');
         return;
       }
-      addImportedBtn.disabled = true;
-      let added = 0;
-      try {
-        for (let start = 0; start < selected.length; start += 2) {
-          const batch = selected.slice(start, start + 2);
-          setImportStatus(`Descargando ${Math.min(start + batch.length, selected.length)} de ${selected.length} HTML…`);
-          const response = await fetch(driveImportEndpoint, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'download', folderUrl: driveUrlEl.value.trim(), fileIds: batch.map(file => file.id) }),
-          });
-          let payload;
-          try { payload = await response.json(); } catch { throw new Error('La descarga devolvió una respuesta inválida.'); }
-          if (!response.ok) throw new Error(payload?.error?.message || `La descarga falló (${response.status}).`);
-          if (!Array.isArray(payload?.files)) throw new Error('La descarga devolvió archivos inválidos.');
-          payload.files.forEach(file => {
-            if (typeof file?.name !== 'string' || typeof file?.content !== 'string' || duplicateExists(file.name, file.content)) return;
-            items.push({ id: 'o' + (++seq), name: file.name, source: file.content, text: '', status: 'idle', issues: [] });
-            added++;
-          });
-          render();
-        }
-        setImportStatus(added ? `${added} archivo(s) agregado(s).` : 'Los archivos seleccionados ya estaban cargados.', added ? 'success' : '');
-      } catch (err) {
-        setImportStatus(err.message || 'No se pudieron descargar los archivos seleccionados.', 'error');
-      } finally {
-        addImportedBtn.disabled = false;
+
+      for (let start = 0; start < selected.length; start += 2) {
+        const batch = selected.slice(start, start + 2);
+        setImportStatus(`Descargando ${Math.min(start + batch.length, selected.length)} de ${selected.length} HTML…`);
+        const files = await postImport({ action: 'download', folderUrl, fileIds: batch.map(file => file.id) },
+          'La descarga devolvió una respuesta inválida.', 'La descarga falló');
+        files.forEach(file => {
+          if (typeof file?.name !== 'string' || typeof file?.content !== 'string' || duplicateExists(file.name, file.content)) return;
+          items.push({ id: 'o' + (++seq), name: file.name, source: file.content, text: '', status: 'idle', issues: [] });
+          added++;
+        });
+        render();
+        processPending();
       }
-   }
+      const skippedNote = tooLarge.length ? ` ${tooLarge.length} omitido(s) por superar 5 MiB.` : '';
+      setImportStatus(
+        (added ? `${added} archivo(s) importado(s).` : 'Los archivos de la carpeta ya estaban cargados.') + skippedNote,
+        added ? 'success' : '');
+    } catch (err) {
+      // Permite reintentar el mismo enlace tras un fallo.
+      lastImportedUrl = '';
+      setImportStatus(err.message || 'No se pudo importar la carpeta.', 'error');
+    } finally {
+      importing = false;
+      fetchDriveBtn.disabled = false;
+    }
+  }
 
-   if (!driveImportEndpoint) {
-     fetchDriveBtn.disabled = true;
-     setImportStatus('La importación de Drive no está configurada.');
-   }
+  if (!driveImportEndpoint) {
+    fetchDriveBtn.disabled = true;
+    setImportStatus('La importación de Drive no está configurada.');
+  }
 
-  // ---- extracción del copy sin renderizar ----------------------------
-  // Estos creativos empaquetan el texto dentro de iframes anidados (srcdoc)
-  // y en HTML escapado varias veces. En vez de renderizar, desescapamos el
-  // archivo y sacamos el texto de cara al usuario que hay entre etiquetas,
-  // filtrando el andamiaje (JS, base64, tokens de la herramienta).
+  // ---- extracción del copy sin renderizar ------------------------------
+  // La lógica pura de extracción y de armado de la solicitud a Gemini vive
+  // en checker.js (window.OrthographyChecker); acá solo se inyecta lo que
+  // depende del DOM.
 
   function decodeEntities(str) {
     const ta = document.createElement('textarea');
@@ -314,70 +337,11 @@
     return ta.value;
   }
 
-  function looksLikeCopy(t) {
-    t = t.replace(/\s+/g, ' ').trim();
-    if (t.length < 2 || t.length > 120) return false;
-    if (/^(data:|https?:|\/\/|@@|\/\*|\*|\{|\})/.test(t)) return false;
-    if (!/[A-Za-zÁÉÍÓÚÑáéíóúñ]{2,}/.test(t)) return false;
-    // fragmentos técnicos
-    const bad = ['function','var ','const ','return','px','rgb','inset','SPRT',
-                 'CHUNK','window.','document.','://','.js','locale','__',
-                 'node-defs','formatDate','viewBox','translate','opacity'];
-    if (bad.some(b => t.includes(b))) return false;
-    if (/[="';{}]/.test(t)) return false;
-    // proporción mínima de letras
-    const letters = (t.match(/[A-Za-zÁÉÍÓÚÑáéíóúñ]/g) || []).length;
-    if (letters / t.length < 0.4) return false;
-    return true;
-  }
+  // ---- llamada a Gemini --------------------------------------------------
 
-  // Nombres internos que la herramienta mete y no son copy real.
-  function isInternalName(t) {
-    return /^Untitled(_\d+)?$/i.test(t.trim());
-  }
-
-  function extractText(source) {
-    // Desescapar varios niveles (iframe srcdoc anidado).
-    let d = source;
-    for (let i = 0; i < 4; i++) d = decodeEntities(d);
-
-    const seen = new Set();
-    const out = [];
-    // Texto entre > y < que no contenga otras etiquetas ni llaves.
-    const re = /> *([^<>{}]+?) *</g;
-    let m;
-    while ((m = re.exec(d)) !== null) {
-      const t = m[1].replace(/\s+/g, ' ').trim();
-      if (looksLikeCopy(t) && !isInternalName(t) && !seen.has(t)) {
-        seen.add(t);
-        out.push(t);
-      }
-    }
-    return Promise.resolve(out.join('\n'));
-  }
-
-  // ---- llamada a Gemini ----------------------------------------------
-  const PROMPT = `Eres un corrector ortográfico. Te doy el texto visible de un anuncio (creativo publicitario) que puede estar en español y/o inglés. Encuentra SOLO errores ortográficos y de acentuación reales.
-
-Reglas:
-- No corrijas estilo, gramática discutible ni mayúsculas de marketing.
-- Ignora nombres de marca, hashtags, URLs, códigos y palabras claramente inventadas.
-- Si una palabra puede ser correcta en su idioma, no la marques.
-- Detecta el idioma de cada fragmento por su contexto.
-
-Devuelve SOLO un objeto JSON válido, sin texto alrededor ni markdown, con esta forma:
-{"issues":[{"original":"palabra o frase tal cual aparece","suggestion":"corrección","reason":"motivo breve","lang":"es|en"}]}
-Si no hay errores, devuelve {"issues":[]}.
-
-TEXTO:
-`;
-
-  async function checkSpelling(text, model, key) {
-    const body = {
-      contents: [{ parts: [{ text: PROMPT + text }] }],
-      generationConfig: { maxOutputTokens: 2048 }
-    };
-    const res = await fetch(EP(model), {
+  async function callGemini(promptText, media, model, key) {
+    const body = OC.buildRequestBody(promptText, media);
+    const res = await fetch(OC.buildEndpointUrl(model), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
       body: JSON.stringify(body)
@@ -385,23 +349,47 @@ TEXTO:
     if (!res.ok) {
       let detail = '';
       try { detail = (await res.json())?.error?.message || ''; } catch {}
-      throw new Error(`Gemini ${res.status}${detail ? ': ' + detail : ''}`);
+      throw new Error(OC.describeGeminiHttpError(res.status, detail));
     }
     const data = await res.json();
     const raw = data?.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '';
-    const clean = raw.replace(/```json/gi, '').replace(/```/g, '').trim();
-    let parsed;
-    try { parsed = JSON.parse(clean); }
-    catch { throw new Error('Gemini devolvió algo que no es JSON: ' + clean.slice(0, 120)); }
-    return Array.isArray(parsed.issues) ? parsed.issues : [];
+    try {
+      return OC.parseGeminiResponseText(raw);
+    } catch {
+      throw new Error('Gemini devolvió algo que no es JSON: ' + raw.slice(0, 120));
+    }
   }
 
-  // ---- render ---------------------------------------------------------
+  function checkSpelling(text, model, key) {
+    return callGemini(OC.PROMPT + text, null, model, key);
+  }
+
+  function checkSpellingVisual(media, model, key) {
+    return callGemini(OC.VISUAL_PROMPT, media, model, key);
+  }
+
+  // ---- render -------------------------------------------------------------
   function render() {
     cardsEl.textContent = '';
     items.forEach(it => cardsEl.appendChild(buildCard(it)));
     countEl.textContent = items.length ? `${items.length} archivo(s)` : '';
-    runBtn.disabled = items.length === 0;
+    runBtn.disabled = running || items.length === 0;
+  }
+
+  function buildIssueRow(iss) {
+    const row = document.createElement('div');
+    const isSuggestion = iss.type === 'suggestion';
+    row.className = `issue${isSuggestion ? ' suggestion' : ''}`;
+    const typeChip = isSuggestion ? `<span class="lang type">sugerencia</span>` : '';
+    const sourceChip = iss.source && iss.source !== 'text'
+      ? `<span class="lang">${escapeHtml(iss.source === 'image' ? 'imagen' : 'video')}</span>` : '';
+    row.innerHTML =
+      `<span class="${isSuggestion ? 'sugg-t' : 'bad-t'}">${escapeHtml(iss.original || '')}</span> → ` +
+      `<span class="good-t">${escapeHtml(iss.suggestion || '')}</span>` +
+      `<span class="lang">${escapeHtml(iss.lang || '?')}</span>` +
+      typeChip + sourceChip +
+      `<div class="why">${escapeHtml(iss.reason || '')}</div>`;
+    return row;
   }
 
   function buildCard(it) {
@@ -415,12 +403,25 @@ TEXTO:
     nm.textContent = it.name;
     const badge = document.createElement('span');
 
-    if (it.status === 'idle')      { badge.className = 'badge run';  badge.textContent = 'sin revisar'; }
-    else if (it.status === 'running'){ badge.className = 'badge run'; badge.textContent = it.stage || 'revisando…'; }
-    else if (it.status === 'error') { badge.className = 'badge bad';  badge.textContent = 'error'; }
-    else if (it.status === 'done')  {
-      if (it.issues.length === 0)   { badge.className = 'badge ok';   badge.textContent = 'sin errores'; }
-      else                          { badge.className = 'badge warn'; badge.textContent = it.issues.length + ' posible(s)'; }
+    const issues = it.issues || [];
+    const errors = issues.filter(iss => iss.type !== 'suggestion');
+    const suggestions = issues.filter(iss => iss.type === 'suggestion');
+
+    if (it.status === 'idle')          { badge.className = 'badge run';  badge.textContent = 'sin revisar'; }
+    else if (it.status === 'running')  { badge.className = 'badge run';  badge.textContent = it.stage || 'revisando…'; }
+    else if (it.status === 'error')    { badge.className = 'badge bad';  badge.textContent = 'error'; }
+    else if (it.status === 'empty')    { badge.className = 'badge warn'; badge.textContent = 'sin texto'; }
+    else if (it.status === 'done') {
+      if (errors.length > 0) {
+        badge.className = 'badge warn';
+        badge.textContent = `${errors.length} error(es)` + (suggestions.length ? ` · ${suggestions.length} sugerencia(s)` : '');
+      } else if (suggestions.length > 0) {
+        badge.className = 'badge ok';
+        badge.textContent = `sin errores · ${suggestions.length} sugerencia(s)`;
+      } else {
+        badge.className = 'badge ok';
+        badge.textContent = 'sin errores';
+      }
     }
     h.append(nm, badge);
     card.appendChild(h);
@@ -430,35 +431,36 @@ TEXTO:
 
     if (it.status === 'error') {
       b.innerHTML = `<div class="issue"><span class="bad-t">${escapeHtml(it.errorMsg)}</span></div>`;
+    } else if (it.status === 'empty') {
+      b.innerHTML = `<div class="why">No se encontró texto ni imágenes/video embebidos para revisar.</div>`;
     } else if (it.status === 'done') {
-      if (it.issues.length === 0) {
-        b.innerHTML = `<div class="why">No se detectaron errores ortográficos en el texto del HTML.</div>`;
+      if (errors.length === 0 && suggestions.length === 0) {
+        const scope = it.mode === 'visual' ? 'en las imágenes/video' : 'en el texto del HTML';
+        b.innerHTML = `<div class="why">No se detectaron errores ortográficos ${scope}.</div>`;
       } else {
-        it.issues.forEach(iss => {
-          const row = document.createElement('div');
-          row.className = 'issue';
-          row.innerHTML =
-            `<span class="bad-t">${escapeHtml(iss.original || '')}</span> → ` +
-            `<span class="good-t">${escapeHtml(iss.suggestion || '')}</span>` +
-            `<span class="lang">${escapeHtml(iss.lang || '?')}</span>` +
-            `<div class="why">${escapeHtml(iss.reason || '')}</div>`;
-          b.appendChild(row);
-        });
+        [...errors, ...suggestions].forEach(iss => b.appendChild(buildIssueRow(iss)));
       }
-      // ver el texto que se extrajo (para depurar)
-      const toggle = document.createElement('span');
-      toggle.className = 'toggle';
-      toggle.textContent = 'ver texto extraído';
-      const pre = document.createElement('div');
-      pre.className = 'extract';
-      pre.textContent = it.text || '(no se extrajo texto — ¿el creativo pinta por JS tardío o todo va en el MP4?)';
-      toggle.onclick = () => {
-        pre.classList.toggle('on');
-        toggle.textContent = pre.classList.contains('on') ? 'ocultar texto' : 'ver texto extraído';
-      };
-      b.append(toggle, pre);
+      if (it.mode === 'visual') {
+        const hint = document.createElement('div');
+        hint.className = 'hint';
+        hint.textContent = `Revisado desde ${it.mediaCount} imagen(es)/video embebido(s).`;
+        b.appendChild(hint);
+      } else {
+        // ver el texto que se extrajo (para depurar)
+        const toggle = document.createElement('span');
+        toggle.className = 'toggle';
+        toggle.textContent = 'ver texto extraído';
+        const pre = document.createElement('div');
+        pre.className = 'extract';
+        pre.textContent = it.text || '(no se extrajo texto)';
+        toggle.onclick = () => {
+          pre.classList.toggle('on');
+          toggle.textContent = pre.classList.contains('on') ? 'ocultar texto' : 'ver texto extraído';
+        };
+        b.append(toggle, pre);
+      }
     } else {
-      b.innerHTML = `<div class="why">Pulsa “Revisar ortografía”.</div>`;
+      b.innerHTML = `<div class="why">En cola para revisar.</div>`;
     }
 
     card.appendChild(b);
@@ -469,26 +471,51 @@ TEXTO:
     return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   }
 
-  // ---- flujo principal -----------------------------------------------
-  async function runAll() {
+  // ---- flujo principal ------------------------------------------------
+  // Revisa todo lo que esté en cola ('idle'). Los archivos que llegan durante
+  // una corrida se toman en la misma vuelta, porque se busca el siguiente
+  // pendiente en cada iteración.
+  async function processPending() {
+    if (running || !items.some(it => it.status === 'idle')) return;
     const key = keyEl.value.trim();
-    if (!key) { keyEl.focus(); return alert('Falta la API key.'); }
+    if (!key) {
+      keyEl.focus();
+      setKeyStatus('Pega tu API key de Gemini: los archivos se revisan en cuanto la agregues.', 'error');
+      return;
+    }
     const model = currentModel();
 
+    running = true;
     runBtn.disabled = true;
     clearBtn.disabled = true;
 
-    for (const it of items) {
+    let it;
+    while ((it = items.find(item => item.status === 'idle'))) {
       it.status = 'running'; it.stage = 'leyendo texto…'; render();
       try {
-        it.text = await extractText(it.source);
-        if (!it.text.trim()) {
-          it.status = 'done'; it.issues = []; render();
-          continue;
+        it.text = OC.extractText(it.source, decodeEntities);
+        it.mode = 'text';
+        it.mediaCount = 0;
+        if (it.text.trim()) {
+          it.stage = 'consultando a Gemini…'; render();
+          it.issues = await checkSpelling(it.text, model, key);
+          it.status = 'done';
+        } else {
+          it.stage = 'buscando imágenes y video…'; render();
+          const decoded = OC.decodeMultiple(it.source, decodeEntities);
+          const media = OC.extractEmbeddedMedia(decoded, it.source);
+          const mediaCount = media.images.length + media.videos.length;
+          if (mediaCount > 0) {
+            it.mode = 'visual';
+            it.mediaCount = mediaCount;
+            it.stage = 'analizando imágenes con Gemini…'; render();
+            it.issues = await checkSpellingVisual(media, model, key);
+            it.status = 'done';
+          } else {
+            it.issues = [];
+            it.status = 'empty';
+          }
         }
-        it.stage = 'consultando a Gemini…'; render();
-        it.issues = await checkSpelling(it.text, model, key);
-        it.status = 'done';
       } catch (err) {
         it.status = 'error';
         it.errorMsg = err.message;
@@ -496,43 +523,53 @@ TEXTO:
       render();
     }
 
-    runBtn.disabled = false;
+    running = false;
     clearBtn.disabled = false;
+    render();
   }
 
-  // ---- entrada de archivos -------------------------------------------
-   function addFiles(list) {
-     const files = [...list].filter(f => /\.html?$/i.test(f.name));
-     if (!files.length) return;
+  function rerunAll() {
+    items.forEach(it => { it.status = 'idle'; it.issues = []; });
+    render();
+    processPending();
+  }
+
+  // ---- entrada de archivos ---------------------------------------------
+  function addFiles(list) {
+    const files = [...list].filter(f => /\.html?$/i.test(f.name));
+    if (!files.length) return;
     files.sort((a, b) => a.name.localeCompare(b.name, 'es', { numeric: true }));
     let pending = files.length;
     files.forEach(file => {
-       const r = new FileReader();
-       r.onload = () => {
-         const source = String(r.result);
-         if (!duplicateExists(file.name, source)) {
-           items.push({ id: 'o' + (++seq), name: file.name, source, text: '', status: 'idle', issues: [] });
-         }
-        if (--pending === 0) render();
+      const r = new FileReader();
+      r.onload = () => {
+        const source = String(r.result);
+        if (!duplicateExists(file.name, source)) {
+          items.push({ id: 'o' + (++seq), name: file.name, source, text: '', status: 'idle', issues: [] });
+        }
+        if (--pending === 0) { render(); processPending(); }
       };
-      r.onerror = () => { if (--pending === 0) render(); };
+      r.onerror = () => { if (--pending === 0) { render(); processPending(); } };
       r.readAsText(file);
     });
   }
 
   dropEl.onclick = () => picker.click();
   dropEl.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); picker.click(); } };
-   picker.onchange = e => { addFiles(e.target.files); picker.value = ''; };
+  picker.onchange = e => { addFiles(e.target.files); picker.value = ''; };
   ['dragenter','dragover'].forEach(t => dropEl.addEventListener(t, e => { e.preventDefault(); dropEl.classList.add('hot'); }));
   ['dragleave','drop'].forEach(t => dropEl.addEventListener(t, e => { e.preventDefault(); dropEl.classList.remove('hot'); }));
   dropEl.addEventListener('drop', e => addFiles(e.dataTransfer.files));
   window.addEventListener('dragover', e => e.preventDefault());
   window.addEventListener('drop', e => e.preventDefault());
 
-   runBtn.onclick = runAll;
-   clearBtn.onclick = () => { items = []; render(); };
-   fetchDriveBtn.onclick = fetchDriveFiles;
-   addImportedBtn.onclick = addImportedFiles;
+  runBtn.onclick = rerunAll;
+  clearBtn.onclick = () => { items = []; lastImportedUrl = ''; render(); };
+  fetchDriveBtn.onclick = () => importDriveFolder({ force: true });
+  // Pegar el enlace (o Enter / salir del campo) dispara la importación.
+  driveUrlEl.addEventListener('paste', () => setTimeout(() => importDriveFolder(), 0));
+  driveUrlEl.addEventListener('change', () => importDriveFolder());
+  driveUrlEl.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); importDriveFolder(); } });
 })();
 </script>
 </body>
