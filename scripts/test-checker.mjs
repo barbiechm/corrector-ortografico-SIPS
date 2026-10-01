@@ -215,3 +215,15 @@ test('normalizeIssues drops findings whose suggestion equals the original', () =
   ]);
   assert.deepEqual(issues.map(issue => issue.original), ['Ola']);
 });
+
+test('parseAnalysisResponse counts server- and client-discarded findings', () => {
+  const issue = { original: 'Ola', suggestion: 'Hola', reason: 'r', lang: 'es', type: 'error', source: 'text' };
+  const parsed = OC.parseAnalysisResponse({
+    issues: [issue, { ...issue, suggestion: 'Ola' }], discardedIssues: 2,
+    extractedText: '', unreadableText: false, model: 'provider/model',
+  });
+  assert.equal(parsed.issues.length, 1);
+  assert.equal(parsed.discardedIssues, 3);
+  const legacy = OC.parseAnalysisResponse({ issues: [], extractedText: '', unreadableText: false, model: 'provider/model' });
+  assert.equal(legacy.discardedIssues, 0);
+});

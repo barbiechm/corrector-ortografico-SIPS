@@ -370,6 +370,10 @@
       } else if (errors.length > 0) {
         badge.className = 'badge warn';
         badge.textContent = `${errors.length} error(es)` + (suggestions.length ? ` · ${suggestions.length} sugerencia(s)` : '');
+      } else if (it.discardedIssues > 0) {
+        // Con hallazgos descartados no se puede afirmar "sin errores".
+        badge.className = 'badge warn';
+        badge.textContent = 'revisión parcial' + (suggestions.length ? ` · ${suggestions.length} sugerencia(s)` : '');
       } else if (suggestions.length > 0) {
         badge.className = 'badge ok';
         badge.textContent = `sin errores · ${suggestions.length} sugerencia(s)`;
@@ -395,7 +399,13 @@
         warning.textContent = 'Hay texto que no se pudo leer. Revisa el original: el análisis es incompleto.';
         b.appendChild(warning);
       }
-      if (errors.length === 0 && suggestions.length === 0 && !it.unreadableText) {
+      if (it.discardedIssues > 0) {
+        const warning = document.createElement('div');
+        warning.className = 'hint';
+        warning.textContent = `Se descartaron ${it.discardedIssues} hallazgo(s) que no se pudieron verificar contra el contenido. Usa “Volver a revisar todo” para confirmar.`;
+        b.appendChild(warning);
+      }
+      if (errors.length === 0 && suggestions.length === 0 && !it.unreadableText && !it.discardedIssues) {
         const scope = it.mode === 'visual' ? 'en las imágenes/video' : 'en el texto del HTML';
         b.innerHTML = `<div class="why">No se detectaron errores ortográficos ni gramaticales ${scope}.</div>`;
       } else {
@@ -464,6 +474,7 @@
       it.status = 'running'; it.stage = 'leyendo texto…'; render();
       try {
         it.unreadableText = false;
+        it.discardedIssues = 0;
         it.extractedText = '';
         it.text = it.uploadMedia ? '' : OC.extractText(it.source, decodeEntities);
         it.mode = 'text';

@@ -41,7 +41,17 @@ try {
     throw new Error('runtime-config.js does not expose a valid HTTPS /import endpoint');
   }
 
+  const analysisEndpoint = window.ORTHOGRAPHY_RUNTIME_CONFIG?.analysisEndpoint;
+  if (typeof analysisEndpoint !== 'string') throw new Error('runtime-config.js does not define analysisEndpoint');
+  if (analysisEndpoint) {
+    const analysis = new URL(analysisEndpoint);
+    if (analysis.protocol !== 'https:' || analysis.pathname !== '/analyze') {
+      throw new Error('runtime-config.js does not expose a valid HTTPS /analyze endpoint');
+    }
+  }
+
   console.log(`runtime config loaded: ${endpoint}`);
+  console.log(`analysis endpoint: ${analysisEndpoint || '(empty: analysis disabled)'}`);
 } finally {
   await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
 }

@@ -144,10 +144,12 @@ function validateInput(input) {
       if (aggregate > MEDIA_LIMIT) {
         throw new PublicError(413, 'MEDIA_TOO_LARGE', 'Los archivos superan el límite conjunto de 14 MiB.');
       }
-      const decoded = atob(file.data);
-      // Re-encoding also rejects noncanonical padding bits.
-      if (btoa(decoded) !== file.data
-        || !hasSignature(Uint8Array.from(decoded.slice(0, 12), (char) => char.charCodeAt(0)), file.mimeType)) {
+      // Only the final quantum can carry noncanonical padding bits and only the first
+      // 12 bytes carry the signature, so neither check needs the whole payload decoded.
+      const tail = file.data.slice(-4);
+      const head = atob(file.data.slice(0, 16));
+      if (btoa(atob(tail)) !== tail
+        || !hasSignature(Uint8Array.from(head, (char) => char.charCodeAt(0)), file.mimeType)) {
         throw invalidRequest();
       }
     }
@@ -173,22 +175,29 @@ function validatedResult(value, input, model) {
   if (input.text.trim()) sources.add('text');
   if (input.media.images.length) sources.add('image');
   if (input.media.videos.length) sources.add('video');
+  const issues = [];
   for (const issue of value.issues) {
+    // A malformed issue means the schema was not honored: reject the whole result.
     if (!exactKeys(issue, ISSUE_FIELDS)
       || !['original', 'suggestion', 'reason'].every((key) => typeof issue[key] === 'string')
       || !issue.original.trim() || !issue.reason.trim()
       || !['es', 'en'].includes(issue.lang) || !['error', 'suggestion'].includes(issue.type)
-      || !sources.has(issue.source)
-      || (issue.source === 'text' && !input.text.includes(issue.original))) throw invalidOutput();
+      || !['text', 'image', 'video'].includes(issue.source)) throw invalidOutput();
+    // A well-formed issue that cannot be traced to the input, or changes nothing, is
+    // discarded on its own. It is counted so the caller never reports a clean pass.
+    if (!sources.has(issue.source)
+      || (issue.source === 'text' && !input.text.includes(issue.original))
+      || issue.suggestion.trim() === issue.original.trim()) continue;
+    issues.push(Object.fromEntries(ISSUE_FIELDS.map((key) => [key, issue[key]])));
   }
   if (!input.media.images.length && !input.media.videos.length
     && (value.extractedText !== '' || value.unreadableText)) throw invalidOutput();
-  return { issues: value.issues.map((issue) => Object.fromEntries(ISSUE_FIELDS.map((key) => [key, issue[key]]))),
+  return { issues, discardedIssues: value.issues.length - issues.length,
     extractedText: value.extractedText, unreadableText: value.unreadableText, model };
 }
 
 async function analyze(input, env, model) {
-  const content = [{ type: 'text', text: input.text }];
+  const content = input.text.trim() ? [{ type: 'text', text: input.text }] : [];
   for (const file of input.media.images) content.push({ type: 'image_url', image_url: {
     url: `data:${file.mimeType};base64,${file.data}`, detail: 'high',
   } });

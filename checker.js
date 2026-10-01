@@ -269,8 +269,12 @@
       || typeof payload.unreadableText !== 'boolean' || typeof payload.model !== 'string') {
       throw new Error('El servicio de análisis devolvió una respuesta inválida.');
     }
-    return { issues: normalizeIssues(payload.issues), extractedText: payload.extractedText,
-      unreadableText: payload.unreadableText, model: payload.model };
+    const issues = normalizeIssues(payload.issues);
+    const discarded = Number.isSafeInteger(payload.discardedIssues) && payload.discardedIssues > 0
+      ? payload.discardedIssues : 0;
+    // Hallazgos descartados (por el servidor o aquí) impiden mostrar un "sin errores" limpio.
+    return { issues, discardedIssues: discarded + (payload.issues.length - issues.length),
+      extractedText: payload.extractedText, unreadableText: payload.unreadableText, model: payload.model };
   }
 
   // ---- Worker (Drive import) error translation ---------------------------

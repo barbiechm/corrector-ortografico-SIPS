@@ -107,7 +107,7 @@ test('multimodal payload and strict schema use documented formats and one paid r
   await mocked(t, () => completion(result), async (calls) => {
     const response = await worker.fetch(request(value), env);
     assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { ...result, model: 'google/gemini-3.5-flash-lite' });
+    assert.deepEqual(await response.json(), { ...result, discardedIssues: 0, model: 'google/gemini-3.5-flash-lite' });
     assert.equal(calls.length, 1);
     const [url, options] = calls[0];
     assert.equal(url, 'https://openrouter.ai/api/v1/chat/completions');
@@ -254,7 +254,7 @@ test('malformed, invalid schema, truncated, and refused results never become cle
     const badResults = [null, {}, { ...clean, extra: 1 }, { ...clean, unreadableText: 'false' },
       { ...clean, extractedText: 'hallucinated' }, { ...clean, issues: {} }];
     const issue = { original: 'Hello', suggestion: 'Hi', reason: 'Optional', lang: 'en', type: 'suggestion', source: 'text' };
-    for (const change of [{ source: 'image' }, { original: 'not in input' }, { reason: '' }, { lang: 'fr' },
+    for (const change of [{ source: 'audio' }, { original: ' ' }, { reason: '' }, { lang: 'fr' },
       { type: 'typo' }, { extra: true }, { suggestion: null }]) badResults.push({ ...clean, issues: [{ ...issue, ...change }] });
     for (const value of badResults) {
       response = completion(value);
@@ -273,6 +273,51 @@ test('malformed, invalid schema, truncated, and refused results never become cle
       response = value;
       await expectError(await worker.fetch(request(), env), 502, code);
     }
+  });
+});
+
+test('unverifiable or no-op findings are discarded and counted, never reported as a clean pass', async (t) => {
+  const issue = { original: 'Hello', suggestion: 'Hi', reason: 'Optional', lang: 'en', type: 'suggestion', source: 'text' };
+  const result = { ...clean, issues: [
+    issue,
+    { ...issue, original: 'not in input' },
+    { ...issue, source: 'image' },
+    { ...issue, suggestion: ' Hello ' },
+  ] };
+  await mocked(t, () => completion(result), async () => {
+    const response = await worker.fetch(request(), env);
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.deepEqual(body.issues, [issue]);
+    assert.equal(body.discardedIssues, 3);
+  });
+});
+
+test('media-only requests send no empty text part upstream', async (t) => {
+  const value = { text: '  ', media: { images: [png], videos: [] } };
+  await mocked(t, () => completion({ ...clean, extractedText: 'Visible' }), async (calls) => {
+    const response = await worker.fetch(request(value), env);
+    assert.equal(response.status, 200);
+    assert.deepEqual(JSON.parse(calls[0][1].body).messages[1].content, [
+      { type: 'image_url', image_url: { url: `data:image/png;base64,${png.data}`, detail: 'high' } },
+    ]);
+  });
+});
+
+test('large media is validated without decoding the whole payload', async (t) => {
+  const bytes = new Uint8Array(4 * MiB);
+  bytes.set([137, 80, 78, 71, 13, 10, 26, 10]);
+  const big = media('image/png', bytes);
+  await mocked(t, () => completion({ ...clean, extractedText: 'Visible' }), async () => {
+    const original = globalThis.atob;
+    let longest = 0;
+    t.mock.method(globalThis, 'atob', (value) => { longest = Math.max(longest, value.length); return original(value); });
+    const response = await worker.fetch(request({ text: '', media: { images: [big], videos: [] } }), env);
+    assert.equal(response.status, 200);
+    assert.ok(longest <= 16, `decoded ${longest} base64 chars`);
+    // Noncanonical padding bits in the final quantum are still rejected.
+    const tampered = { ...big, data: big.data.slice(0, -4) + 'AB==' };
+    await expectError(await worker.fetch(request({ text: '', media: { images: [tampered], videos: [] } }), env), 400, 'INVALID_REQUEST');
   });
 });
 
