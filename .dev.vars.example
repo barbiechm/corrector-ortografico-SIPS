@@ -1,0 +1,6 @@
+# Copy this file to .dev.vars and fill in your private OpenRouter API key.
+# For the analysis Worker (wrangler.analysis.jsonc), not the Drive Worker.
+OPENROUTER_API_KEY=
+OPENROUTER_MODEL=google/gemini-3.5-flash-lite
+# Use a separate long random password, not your OpenRouter API key.
+ANALYSIS_ACCESS_TOKEN=

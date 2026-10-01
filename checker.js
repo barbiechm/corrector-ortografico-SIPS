@@ -1,4 +1,4 @@
-// Pure(-ish) extraction and Gemini-request logic shared by index.html.
+// Pure extraction and analysis request logic shared by index.html.
 //
 // This is a CLASSIC script on purpose (not an ES module): the README tells
 // users to open index.html directly via file://, where <script type="module">
@@ -118,13 +118,13 @@
 
   // ---- embedded media fallback ------------------------------------------
   // Used when extractText finds nothing: pull base64 data: URIs for images
-  // and video out of the (fully decoded) source so Gemini can read them
+  // and video out of the (fully decoded) source so the server can read them
   // visually instead.
 
   const MIN_IMAGE_BASE64_BYTES = 2 * 1024; // skip icons/spacers under ~2 KB
   const MAX_MEDIA_IMAGES = 6;
   const MAX_MEDIA_VIDEOS = 1;
-  // Stay comfortably under Gemini's ~20 MB inline-request limit.
+  // Bound embedded media payloads independently of the provider.
   const MAX_MEDIA_TOTAL_BASE64_BYTES = 14 * 1024 * 1024;
 
   const MEDIA_DATA_URI_RE = /data:(image\/(?:png|jpeg|jpg|webp|gif|svg\+xml)|video\/(?:mp4|webm));base64,([A-Za-z0-9+/=\s]+)/gi;
@@ -210,89 +210,35 @@
     };
   }
 
-  // ---- Gemini prompts -----------------------------------------------------
+  // ---- local uploads and analysis contract --------------------------------
+  const MAX_UPLOAD_FILE_BYTES = 5 * 1024 * 1024;
+  const IMAGE_EXTENSION_MIMES = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp' };
 
-  const PROMPT = `Eres un corrector ortográfico y de gramática. Te doy el texto visible de un anuncio (creativo publicitario) que puede estar en español y/o inglés. Clasifica cada hallazgo en una de dos categorías:
-
-- "error": errores ortográficos y de acentuación reales, y errores de gramática claros e inequívocos (concordancia, forma verbal incorrecta).
-- "suggestion": mejoras opcionales de gramática, puntuación o claridad (por ejemplo, falta de ¿/¡ de apertura, uso de comas, concordancia discutible). Estas NO cuentan como errores.
-
-Reglas:
-- No corrijas mayúsculas de marketing.
-- Ignora nombres de marca, hashtags, URLs, códigos y palabras claramente inventadas.
-- Si una palabra o frase puede ser correcta, no la marques como error; a lo sumo, como sugerencia.
-- No devuelvas hallazgos cuya corrección sea idéntica al original, ni comentarios sobre el contexto o el tono: solo cambios concretos al texto.
-- Detecta el idioma de cada fragmento por su contexto.
-
-Devuelve SOLO un objeto JSON válido, sin texto alrededor ni markdown, con esta forma:
-{"issues":[{"original":"texto tal cual aparece","suggestion":"corrección o mejora","reason":"motivo breve","lang":"es|en","type":"error|suggestion"}]}
-Si no hay hallazgos, devuelve {"issues":[]}.
-
-TEXTO:
-`;
-
-  const VISUAL_PROMPT = `Eres un corrector ortográfico y de gramática. No se pudo extraer texto del HTML de este anuncio, así que te doy las imágenes y/o el video embebidos. Lee todo el texto visible en las imágenes y en los fotogramas del video, y aplica las mismas reglas que para texto:
-
-- "error": errores ortográficos y de acentuación reales, y errores de gramática claros e inequívocos.
-- "suggestion": mejoras opcionales de gramática, puntuación o claridad. NO cuentan como errores.
-- Ignora nombres de marca, hashtags, URLs, códigos y palabras claramente inventadas.
-- Si un texto puede ser correcto, no lo marques como error; a lo sumo, como sugerencia.
-- No devuelvas hallazgos cuya corrección sea idéntica al original, ni comentarios sobre el contexto o el tono: solo cambios concretos al texto.
-
-Para cada hallazgo, usa "original" con el texto tal cual aparece en la imagen o el video, y "source" con "image" o "video" según corresponda.
-
-Devuelve SOLO un objeto JSON válido, sin texto alrededor ni markdown, con esta forma:
-{"issues":[{"original":"texto tal cual aparece","suggestion":"corrección o mejora","reason":"motivo breve","lang":"es|en","type":"error|suggestion","source":"image|video"}]}
-Si no hay hallazgos, devuelve {"issues":[]}.
-`;
-
-  // ---- Gemini request/response ------------------------------------------
-
-  const GEMINI_API_ORIGIN = 'https://generativelanguage.googleapis.com/v1beta/models';
-  const MAX_OUTPUT_TOKENS = 8192; // Gemini 3 thinking tokens were exhausting 2048 -> truncated JSON.
-  // 560 tokens/image, 70 tokens/video frame at medium resolution.
-  const MEDIA_RESOLUTION = 'MEDIA_RESOLUTION_MEDIUM';
-
-  const RESPONSE_SCHEMA = {
-    type: 'OBJECT',
-    properties: {
-      issues: {
-        type: 'ARRAY',
-        items: {
-          type: 'OBJECT',
-          properties: {
-            original: { type: 'STRING' },
-            suggestion: { type: 'STRING' },
-            reason: { type: 'STRING' },
-            lang: { type: 'STRING' },
-            type: { type: 'STRING', enum: ['error', 'suggestion'] },
-            source: { type: 'STRING', enum: ['text', 'image', 'video'] },
-          },
-          required: ['original', 'suggestion', 'type'],
-        },
-      },
-    },
-    required: ['issues'],
-  };
-
-  function buildEndpointUrl(model) {
-    return `${GEMINI_API_ORIGIN}/${encodeURIComponent(model)}:generateContent`;
+  function classifyUploadFile(file) {
+    if (!Number.isFinite(file.size) || file.size < 0 || file.size > MAX_UPLOAD_FILE_BYTES) {
+      throw new Error('El archivo supera 5 MiB o tiene un tamaño inválido.');
+    }
+    const extension = String(file.name || '').split('.').pop().toLowerCase();
+    if (extension === 'html' || extension === 'htm') return { kind: 'html', mimeType: 'text/html' };
+    const mimeType = IMAGE_EXTENSION_MIMES[extension];
+    if (!mimeType) throw new Error('Formato no admitido. Usa HTML, PNG, JPEG o WebP.');
+    const declared = String(file.type || '').toLowerCase();
+    if (declared && declared !== mimeType) throw new Error('El tipo de imagen no coincide con la extensión del archivo.');
+    return { kind: 'image', mimeType };
   }
 
-  function buildRequestBody(promptText, media) {
-    const parts = [{ text: promptText }];
-    const hasMedia = !!(media && ((media.images && media.images.length) || (media.videos && media.videos.length)));
-    if (hasMedia) {
-      for (const img of media.images || []) parts.push({ inlineData: { mimeType: img.mimeType, data: img.data } });
-      for (const vid of media.videos || []) parts.push({ inlineData: { mimeType: vid.mimeType, data: vid.data } });
+  function parseImageDataUrl(result, mimeType) {
+    const match = /^data:([^;,]*);base64,([A-Za-z0-9+/]+={0,2})$/i.exec(String(result || ''));
+    if (!match || (match[1].toLowerCase() !== mimeType && match[1].toLowerCase() !== 'application/octet-stream' && match[1] !== '')
+      || match[2].length % 4 !== 0 || base64ByteLength(match[2]) > MAX_UPLOAD_FILE_BYTES) {
+      throw new Error('No se pudo leer una imagen válida del archivo.');
     }
-    const generationConfig = {
-      responseMimeType: 'application/json',
-      responseSchema: RESPONSE_SCHEMA,
-      maxOutputTokens: MAX_OUTPUT_TOKENS,
-    };
-    if (hasMedia) generationConfig.mediaResolution = MEDIA_RESOLUTION;
-    return { contents: [{ parts }], generationConfig };
+    return { mimeType, data: match[2] };
+  }
+
+  function buildAnalysisRequest(text = '', media = {}) {
+    const copyMedia = entries => (entries || []).map(({ mimeType, data }) => ({ mimeType, data }));
+    return { text, media: { images: copyMedia(media.images), videos: copyMedia(media.videos) } };
   }
 
   const VALID_ISSUE_TYPES = new Set(['error', 'suggestion']);
@@ -316,19 +262,15 @@ Si no hay hallazgos, devuelve {"issues":[]}.
       }));
   }
 
-  // Defensive fallback parse in case responseMimeType/responseSchema is
-  // ignored by a given model/proxy and the model still fences the JSON.
-  function parseGeminiResponseText(raw) {
-    const clean = String(raw || '').replace(/```json/gi, '').replace(/```/g, '').trim();
-    const parsed = JSON.parse(clean);
-    return normalizeIssues(parsed && parsed.issues);
-  }
-
-  const RATE_LIMIT_MESSAGE = 'Gemini está limitando las solicitudes (429). Espera un momento y vuelve a intentar.';
-
-  function describeGeminiHttpError(status, detail) {
-    if (status === 429) return RATE_LIMIT_MESSAGE;
-    return `Gemini ${status}${detail ? ': ' + detail : ''}`;
+  function parseAnalysisResponse(payload) {
+    if (payload?.error) throw new Error(typeof payload.error.message === 'string' && payload.error.message
+      ? payload.error.message : 'No se pudo completar el análisis.');
+    if (!payload || !Array.isArray(payload.issues) || typeof payload.extractedText !== 'string'
+      || typeof payload.unreadableText !== 'boolean' || typeof payload.model !== 'string') {
+      throw new Error('El servicio de análisis devolvió una respuesta inválida.');
+    }
+    return { issues: normalizeIssues(payload.issues), extractedText: payload.extractedText,
+      unreadableText: payload.unreadableText, model: payload.model };
   }
 
   // ---- Worker (Drive import) error translation ---------------------------
@@ -359,18 +301,13 @@ Si no hay hallazgos, devuelve {"issues":[]}.
     isInternalName,
     stripInlineTags,
     extractEmbeddedMedia,
-    // prompts
-    PROMPT,
-    VISUAL_PROMPT,
-    // Gemini request/response
-    buildEndpointUrl,
-    buildRequestBody,
+    // analysis and uploads
+    buildAnalysisRequest,
+    parseAnalysisResponse,
+    classifyUploadFile,
+    parseImageDataUrl,
+    MAX_UPLOAD_FILE_BYTES,
     normalizeIssues,
-    parseGeminiResponseText,
-    describeGeminiHttpError,
-    RESPONSE_SCHEMA,
-    MAX_OUTPUT_TOKENS,
-    MEDIA_RESOLUTION,
     MIN_IMAGE_BASE64_BYTES,
     MAX_MEDIA_IMAGES,
     MAX_MEDIA_VIDEOS,

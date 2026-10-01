@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ortografía · Gemini — beta</title>
+<title>Ortografía y gramática — beta</title>
 <style>
   :root {
     --canvas: #17191d; --surface: #202329; --surface-raised: #282c33;
@@ -81,8 +81,7 @@
     .config, .drive { padding: 15px }
     .config .row, .drive .row { align-items: stretch }
     .config label, .drive label { width: 100%; min-width: 0 }
-    input[type=password], #driveUrl, #modelCustom { width: 100%; min-width: 0; flex-basis: 100% }
-    .config select { flex: 1 }
+    input[type=password], #driveUrl { width: 100%; min-width: 0; flex-basis: 100% }
     .drive .row button { width: 100% }
     .drop { padding: 34px 18px }
     .actions > button { flex: 1 1 auto }
@@ -97,29 +96,18 @@
 <body>
 <div class="wrap">
 
-  <h1>Ortografía vía Gemini <span class="beta">BETA</span></h1>
-  <div class="sub">Extrae el copy del HTML (aunque esté en iframes anidados de la herramienta de banners) y se lo pasa a Gemini para detectar errores ortográficos. Todo en tu navegador.</div>
+  <h1>Ortografía y gramática <span class="beta">BETA</span></h1>
+  <div class="sub">Extrae el texto del HTML, incluso en iframes anidados, o lee imágenes para revisar ortografía y gramática mediante el servicio de análisis.</div>
 
   <div class="config">
     <div class="row">
-      <label for="key">API key</label>
-      <input type="password" id="key" placeholder="pega aquí tu Gemini API key" autocomplete="off">
-      <button id="forgetKey" type="button">Olvidar key</button>
-    </div>
-    <div class="row">
-      <label for="model">Modelo</label>
-      <select id="model">
-        <option value="gemini-3.5-flash-lite" selected>gemini-3.5-flash-lite (recomendado)</option>
-        <option value="gemini-3.5-flash">gemini-3.5-flash</option>
-        <option value="gemini-3.6-flash">gemini-3.6-flash</option>
-        <option value="__custom">otro… (escríbelo)</option>
-      </select>
-      <input type="text" id="modelCustom" placeholder="p.ej. gemini-3.7-flash" style="display:none;flex:1;min-width:160px">
+      <label for="key">Clave de acceso</label>
+      <input type="password" id="key" placeholder="pega aquí la clave de acceso al análisis" autocomplete="off">
+      <button id="forgetKey" type="button">Olvidar clave</button>
     </div>
     <div class="hint">
-      La key se saca en <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>.
-      Se guarda en este navegador para no tener que pegarla otra vez y solo se usa para llamar a Gemini;
-      no se envía a ningún otro sitio. En un equipo compartido, pulsa “Olvidar key” al terminar.
+      Usa la clave de acceso proporcionada por quien administra el servicio, no una API key de OpenRouter.
+      Solo permanece en memoria y se envía al servicio de análisis. El servidor elige el modelo y conserva la API key.
     </div>
     <div id="keyStatus" class="import-status" role="status" aria-live="polite"></div>
   </div>
@@ -135,9 +123,9 @@
   </div>
 
   <div class="drop" id="drop" tabindex="0" role="button">
-    <p style="margin:0">Suelta aquí tus <strong>.html</strong></p>
-    <div class="hint2">o haz clic para elegirlos · se revisan al instante</div>
-    <input type="file" id="picker" accept=".html,.htm" multiple>
+    <p style="margin:0">Suelta aquí tus <strong>HTML, PNG, JPEG o WebP</strong></p>
+    <div class="hint2">o haz clic para elegirlos · máximo 5 MiB por archivo · se revisan al instante</div>
+    <input type="file" id="picker" accept=".html,.htm,.png,.jpg,.jpeg,.webp" multiple>
   </div>
 
   <div class="actions">
@@ -152,8 +140,8 @@
     Beta. Revisa <strong>el texto del HTML</strong>, incluso contenido escapado o en iframes anidados
     (<code>srcdoc</code>). Si un HTML no tiene texto extraíble, revisa como respaldo las imágenes y el
     video embebidos como <code>data:</code> base64 en el mismo archivo; no descarga imágenes ni video
-    desde URLs externas, y ese análisis visual consume más tokens de Gemini (aprox. 560 por imagen y 70
-    por fotograma de video). Gemini puede equivocarse: trata cada aviso como candidato a revisar, no
+    desde URLs externas. También admite imágenes independientes. El análisis usa OpenRouter desde el servidor;
+    los costos dependen del modelo y del contenido, especialmente en el análisis visual. La IA puede equivocarse: trata cada aviso como candidato a revisar, no
     como veredicto. Los errores se listan aparte de las sugerencias opcionales. Nombres de marca y
     palabras inventadas pueden salir como falsos positivos.
   </footer>
@@ -169,8 +157,6 @@
   const OC = window.OrthographyChecker;
 
   const keyEl = document.getElementById('key');
-  const modelEl = document.getElementById('model');
-  const modelCustomEl = document.getElementById('modelCustom');
   const driveUrlEl = document.getElementById('driveUrl');
   const fetchDriveBtn = document.getElementById('fetchDrive');
   const importStatusEl = document.getElementById('importStatus');
@@ -192,45 +178,28 @@
   const driveImportEndpoint = typeof runtimeConfig.driveImportEndpoint === 'string'
     ? runtimeConfig.driveImportEndpoint.trim() : '';
 
-  modelEl.addEventListener('change', () => {
-    modelCustomEl.style.display = modelEl.value === '__custom' ? 'block' : 'none';
-  });
-  function currentModel() {
-    return modelEl.value === '__custom' ? (modelCustomEl.value.trim() || 'gemini-3.5-flash-lite') : modelEl.value;
-  }
-
-  // ---- key persistente -----------------------------------------------------
-  // localStorage puede no estar disponible (modo privado, file:// bloqueado):
-  // la app sigue funcionando, solo sin recordar la key.
-  const KEY_STORAGE = 'orthography.geminiKey';
-
-  function loadStoredKey() {
-    try { return localStorage.getItem(KEY_STORAGE) || ''; } catch { return ''; }
-  }
-
-  function storeKey(value) {
-    try {
-      if (value) localStorage.setItem(KEY_STORAGE, value);
-      else localStorage.removeItem(KEY_STORAGE);
-    } catch {}
-  }
+  const analysisEndpoint = typeof runtimeConfig.analysisEndpoint === 'string'
+    ? runtimeConfig.analysisEndpoint.trim() : '';
+  // Best-effort migration: never read or persist credentials.
+  try { localStorage.removeItem('orthography.geminiKey'); } catch {}
 
   function setKeyStatus(message, state = '') {
     keyStatusEl.textContent = message;
     keyStatusEl.className = `import-status${state ? ' ' + state : ''}`;
   }
 
-  keyEl.value = loadStoredKey();
+  keyEl.value = '';
   keyEl.addEventListener('input', () => {
-    storeKey(keyEl.value.trim());
-    if (keyEl.value.trim()) setKeyStatus('');
+    if (analysisEndpoint && keyEl.value.trim()) setKeyStatus('');
+    render();
   });
   keyEl.addEventListener('change', () => processPending());
   forgetKeyBtn.onclick = () => {
     keyEl.value = '';
-    storeKey('');
-    setKeyStatus('Key eliminada de este navegador.');
+    setKeyStatus(analysisEndpoint ? 'Clave eliminada de la memoria.' : 'El servicio de análisis no está configurado.', analysisEndpoint ? '' : 'error');
+    render();
   };
+  if (!analysisEndpoint) setKeyStatus('El servicio de análisis no está configurado. Solicita la configuración al administrador.', 'error');
 
   function setImportStatus(message, state = '') {
     importStatusEl.textContent = message;
@@ -327,7 +296,7 @@
   }
 
   // ---- extracción del copy sin renderizar ------------------------------
-  // La lógica pura de extracción y de armado de la solicitud a Gemini vive
+  // La lógica pura de extracción y de armado de la solicitud de análisis vive
   // en checker.js (window.OrthographyChecker); acá solo se inyecta lo que
   // depende del DOM.
 
@@ -337,35 +306,18 @@
     return ta.value;
   }
 
-  // ---- llamada a Gemini --------------------------------------------------
-
-  async function callGemini(promptText, media, model, key) {
-    const body = OC.buildRequestBody(promptText, media);
-    const res = await fetch(OC.buildEndpointUrl(model), {
+  // ---- analysis service ---------------------------------------------------
+  async function callAnalysis(text, media, key) {
+    const body = OC.buildAnalysisRequest(text, media);
+    const res = await fetch(analysisEndpoint, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
       body: JSON.stringify(body)
     });
-    if (!res.ok) {
-      let detail = '';
-      try { detail = (await res.json())?.error?.message || ''; } catch {}
-      throw new Error(OC.describeGeminiHttpError(res.status, detail));
-    }
-    const data = await res.json();
-    const raw = data?.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '';
-    try {
-      return OC.parseGeminiResponseText(raw);
-    } catch {
-      throw new Error('Gemini devolvió algo que no es JSON: ' + raw.slice(0, 120));
-    }
-  }
-
-  function checkSpelling(text, model, key) {
-    return callGemini(OC.PROMPT + text, null, model, key);
-  }
-
-  function checkSpellingVisual(media, model, key) {
-    return callGemini(OC.VISUAL_PROMPT, media, model, key);
+    let data;
+    try { data = await res.json(); } catch { throw new Error('El servicio de análisis devolvió una respuesta inválida.'); }
+    if (!res.ok && !data?.error) throw new Error(`No se pudo completar el análisis (${res.status}).`);
+    return OC.parseAnalysisResponse(data);
   }
 
   // ---- render -------------------------------------------------------------
@@ -373,7 +325,7 @@
     cardsEl.textContent = '';
     items.forEach(it => cardsEl.appendChild(buildCard(it)));
     countEl.textContent = items.length ? `${items.length} archivo(s)` : '';
-    runBtn.disabled = running || items.length === 0;
+    runBtn.disabled = running || items.length === 0 || !analysisEndpoint || !keyEl.value.trim();
   }
 
   function buildIssueRow(iss) {
@@ -412,7 +364,10 @@
     else if (it.status === 'error')    { badge.className = 'badge bad';  badge.textContent = 'error'; }
     else if (it.status === 'empty')    { badge.className = 'badge warn'; badge.textContent = 'sin texto'; }
     else if (it.status === 'done') {
-      if (errors.length > 0) {
+      if (it.unreadableText) {
+        badge.className = 'badge warn';
+        badge.textContent = 'lectura incompleta' + (errors.length ? ` · ${errors.length} error(es)` : '');
+      } else if (errors.length > 0) {
         badge.className = 'badge warn';
         badge.textContent = `${errors.length} error(es)` + (suggestions.length ? ` · ${suggestions.length} sugerencia(s)` : '');
       } else if (suggestions.length > 0) {
@@ -434,17 +389,27 @@
     } else if (it.status === 'empty') {
       b.innerHTML = `<div class="why">No se encontró texto ni imágenes/video embebidos para revisar.</div>`;
     } else if (it.status === 'done') {
-      if (errors.length === 0 && suggestions.length === 0) {
+      if (it.unreadableText) {
+        const warning = document.createElement('div');
+        warning.className = 'hint';
+        warning.textContent = 'Hay texto que no se pudo leer. Revisa el original: el análisis es incompleto.';
+        b.appendChild(warning);
+      }
+      if (errors.length === 0 && suggestions.length === 0 && !it.unreadableText) {
         const scope = it.mode === 'visual' ? 'en las imágenes/video' : 'en el texto del HTML';
-        b.innerHTML = `<div class="why">No se detectaron errores ortográficos ${scope}.</div>`;
+        b.innerHTML = `<div class="why">No se detectaron errores ortográficos ni gramaticales ${scope}.</div>`;
       } else {
         [...errors, ...suggestions].forEach(iss => b.appendChild(buildIssueRow(iss)));
       }
       if (it.mode === 'visual') {
         const hint = document.createElement('div');
         hint.className = 'hint';
-        hint.textContent = `Revisado desde ${it.mediaCount} imagen(es)/video embebido(s).`;
+        hint.textContent = `Fuente: ${it.mediaCount} imagen(es)/video${it.uploadMedia ? ' del archivo' : ' embebido(s)'}.`;
         b.appendChild(hint);
+        const pre = document.createElement('div');
+        pre.className = 'extract on';
+        pre.textContent = 'Texto leído: ' + (it.extractedText || '(no se pudo extraer texto)');
+        b.appendChild(pre);
       } else {
         // ver el texto que se extrajo (para depurar)
         const toggle = document.createElement('span');
@@ -477,13 +442,15 @@
   // pendiente en cada iteración.
   async function processPending() {
     if (running || !items.some(it => it.status === 'idle')) return;
-    const key = keyEl.value.trim();
-    if (!key) {
-      keyEl.focus();
-      setKeyStatus('Pega tu API key de Gemini: los archivos se revisan en cuanto la agregues.', 'error');
+    if (!analysisEndpoint) {
+      setKeyStatus('El servicio de análisis no está configurado. Solicita la configuración al administrador.', 'error');
       return;
     }
-    const model = currentModel();
+    if (!keyEl.value.trim()) {
+      keyEl.focus();
+      setKeyStatus('Pega la clave de acceso al análisis: los archivos se revisan en cuanto la agregues.', 'error');
+      return;
+    }
 
     running = true;
     runBtn.disabled = true;
@@ -491,25 +458,30 @@
 
     let it;
     while ((it = items.find(item => item.status === 'idle'))) {
+      // Read the current in-memory token for each sequential request.
+      const key = keyEl.value.trim();
+      if (!key) { setKeyStatus('Agrega la clave de acceso para continuar.', 'error'); break; }
       it.status = 'running'; it.stage = 'leyendo texto…'; render();
       try {
-        it.text = OC.extractText(it.source, decodeEntities);
+        it.unreadableText = false;
+        it.extractedText = '';
+        it.text = it.uploadMedia ? '' : OC.extractText(it.source, decodeEntities);
         it.mode = 'text';
         it.mediaCount = 0;
         if (it.text.trim()) {
-          it.stage = 'consultando a Gemini…'; render();
-          it.issues = await checkSpelling(it.text, model, key);
+          it.stage = 'revisando ortografía y gramática…'; render();
+          Object.assign(it, await callAnalysis(it.text, {}, key));
           it.status = 'done';
         } else {
           it.stage = 'buscando imágenes y video…'; render();
-          const decoded = OC.decodeMultiple(it.source, decodeEntities);
-          const media = OC.extractEmbeddedMedia(decoded, it.source);
+          const decoded = it.uploadMedia ? '' : OC.decodeMultiple(it.source, decodeEntities);
+          const media = it.uploadMedia || OC.extractEmbeddedMedia(decoded, it.source);
           const mediaCount = media.images.length + media.videos.length;
           if (mediaCount > 0) {
             it.mode = 'visual';
             it.mediaCount = mediaCount;
-            it.stage = 'analizando imágenes con Gemini…'; render();
-            it.issues = await checkSpellingVisual(media, model, key);
+            it.stage = 'leyendo imágenes y video…'; render();
+            Object.assign(it, await callAnalysis('', media, key));
             it.status = 'done';
           } else {
             it.issues = [];
@@ -529,29 +501,37 @@
   }
 
   function rerunAll() {
-    items.forEach(it => { it.status = 'idle'; it.issues = []; });
+    items.forEach(it => { if (!it.uploadError) { it.status = 'idle'; it.issues = []; } });
     render();
     processPending();
   }
 
   // ---- entrada de archivos ---------------------------------------------
-  function addFiles(list) {
-    const files = [...list].filter(f => /\.html?$/i.test(f.name));
-    if (!files.length) return;
+  async function addFiles(list) {
+    const files = [...list];
     files.sort((a, b) => a.name.localeCompare(b.name, 'es', { numeric: true }));
-    let pending = files.length;
-    files.forEach(file => {
-      const r = new FileReader();
-      r.onload = () => {
-        const source = String(r.result);
+    // Read sequentially and settle every file before starting the analysis queue.
+    for (const file of files) {
+      try {
+        const classification = OC.classifyUploadFile(file);
+        const source = await new Promise((resolve, reject) => {
+          const r = new FileReader();
+          r.onload = () => resolve(String(r.result));
+          r.onerror = r.onabort = () => reject(new Error('No se pudo leer el archivo. Intenta seleccionarlo de nuevo.'));
+          if (classification.kind === 'image') r.readAsDataURL(file);
+          else r.readAsText(file);
+        });
+        const uploadMedia = classification.kind === 'image'
+          ? { images: [OC.parseImageDataUrl(source, classification.mimeType)], videos: [] } : undefined;
         if (!duplicateExists(file.name, source)) {
-          items.push({ id: 'o' + (++seq), name: file.name, source, text: '', status: 'idle', issues: [] });
+          items.push({ id: 'o' + (++seq), name: file.name, source, uploadMedia, text: '', status: 'idle', issues: [] });
         }
-        if (--pending === 0) { render(); processPending(); }
-      };
-      r.onerror = () => { if (--pending === 0) { render(); processPending(); } };
-      r.readAsText(file);
-    });
+      } catch (err) {
+        items.push({ id: 'o' + (++seq), name: file.name, status: 'error', uploadError: true, errorMsg: err.message, issues: [] });
+      }
+      render();
+    }
+    processPending();
   }
 
   dropEl.onclick = () => picker.click();

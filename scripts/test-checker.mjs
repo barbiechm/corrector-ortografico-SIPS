@@ -150,29 +150,47 @@ test('normalizeIssues drops incomplete entries and fills type/source defaults', 
   assert.equal(OC.normalizeIssues('not an array').length, 0);
 });
 
-test('buildRequestBody includes responseSchema and only sets mediaResolution for visual requests', () => {
-  const textBody = OC.buildRequestBody('hola', null);
-  assert.equal(textBody.generationConfig.responseMimeType, 'application/json');
-  assert.deepEqual(plain(textBody.generationConfig.responseSchema), plain(OC.RESPONSE_SCHEMA));
-  assert.equal(textBody.generationConfig.maxOutputTokens, OC.MAX_OUTPUT_TOKENS);
-  assert.equal(textBody.generationConfig.mediaResolution, undefined);
-  assert.equal(textBody.contents[0].parts.length, 1);
-
-  const media = { images: [{ mimeType: 'image/png', data: 'AAAA' }], videos: [] };
-  const visualBody = OC.buildRequestBody('mira', media);
-  assert.equal(visualBody.generationConfig.mediaResolution, OC.MEDIA_RESOLUTION);
-  assert.equal(visualBody.contents[0].parts.length, 2);
-  assert.deepEqual(plain(visualBody.contents[0].parts[1]), { inlineData: { mimeType: 'image/png', data: 'AAAA' } });
+test('analysis requests contain only text and media, never models or provider prompts', () => {
+  assert.deepEqual(plain(OC.buildAnalysisRequest('hola')), { text: 'hola', media: { images: [], videos: [] } });
+  const media = { images: [{ mimeType: 'image/png', data: 'AAAA', byteLength: 3 }], videos: [{ mimeType: 'video/mp4', data: 'BBBB' }] };
+  assert.deepEqual(plain(OC.buildAnalysisRequest('', media)), {
+    text: '', media: { images: [{ mimeType: 'image/png', data: 'AAAA' }], videos: media.videos },
+  });
 });
 
-test('buildEndpointUrl encodes the model name into the URL', () => {
-  const url = OC.buildEndpointUrl('gemini 3.5/flash');
-  assert.equal(url, 'https://generativelanguage.googleapis.com/v1beta/models/gemini%203.5%2Fflash:generateContent');
+test('analysis responses preserve visual metadata and reject malformed success/error payloads', () => {
+  const payload = { issues: [{ original: 'ola', suggestion: 'hola', source: 'image' }], extractedText: 'ola', unreadableText: true, model: 'server/model' };
+  const result = OC.parseAnalysisResponse(payload);
+  assert.equal(result.extractedText, 'ola');
+  assert.equal(result.unreadableText, true);
+  assert.equal(result.model, 'server/model');
+  assert.equal(result.issues[0].source, 'image');
+  for (const invalid of [null, {}, { ...payload, issues: {} }, { ...payload, unreadableText: 'false' }]) {
+    assert.throws(() => OC.parseAnalysisResponse(invalid), /respuesta inválida/);
+  }
+  assert.throws(() => OC.parseAnalysisResponse({ error: { code: 'UNAUTHORIZED', message: 'Clave inválida.' } }), /Clave inválida/);
 });
 
-test('describeGeminiHttpError maps 429 to an actionable Spanish message', () => {
-  assert.match(OC.describeGeminiHttpError(429, ''), /limitando las solicitudes/);
-  assert.equal(OC.describeGeminiHttpError(500, 'boom'), 'Gemini 500: boom');
+test('uploads enforce size, extensions and matching declared MIME', () => {
+  for (const [name, type] of [['A.PNG', 'image/png'], ['a.jpg', 'image/jpeg'], ['a.jpeg', ''], ['a.webp', 'image/webp']]) {
+    assert.equal(OC.classifyUploadFile({ name, type, size: OC.MAX_UPLOAD_FILE_BYTES }).kind, 'image');
+  }
+  assert.equal(OC.classifyUploadFile({ name: 'a.htm', type: '', size: 4 }).kind, 'html');
+  for (const file of [
+    { name: 'a.png', type: 'image/jpeg', size: 4 },
+    { name: 'a.jpg', type: 'image/jpg', size: 4 },
+    { name: 'a.gif', type: 'image/gif', size: 4 },
+    { name: 'a.html', size: OC.MAX_UPLOAD_FILE_BYTES + 1 },
+  ]) assert.throws(() => OC.classifyUploadFile(file));
+});
+
+test('image data URLs are validated and empty browser MIME gets the computed MIME', () => {
+  for (const mime of ['image/png', '', 'application/octet-stream']) {
+    assert.deepEqual(plain(OC.parseImageDataUrl(`data:${mime};base64,AAAA`, 'image/png')), { mimeType: 'image/png', data: 'AAAA' });
+  }
+  for (const invalid of ['data:image/jpeg;base64,AAAA', 'data:image/png;base64,???', 'data:image/png;base64,A', 'data:image/png;base64,', 'not a data URL']) {
+    assert.throws(() => OC.parseImageDataUrl(invalid, 'image/png'));
+  }
 });
 
 test('describeDriveError maps known Worker codes to Spanish and falls back otherwise', () => {
