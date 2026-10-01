@@ -151,3 +151,36 @@ test('Drive import UI and workflow remain identical to the existing implementati
     ['  fetchDriveBtn.onclick', '\n})();'],
   ]) assert.equal(section(html, start, end), section(baseline, start, end));
 });
+
+const embedded = (ch) => `<img src="data:image/png;base64,${ch.repeat(3000)}">`;
+const cleanReply = extractedText => async () => ({ ok: true,
+  json: async () => ({ issues: [], discardedIssues: 0, extractedText, unreadableText: false, model: 'server/model' }) });
+
+test('HTML with some text still sends its embedded images in the same request', async () => {
+  const app = setup({ fetchImpl: cleanReply('ONE BAND TO TRACK') });
+  app.elements.key.value = 'token';
+  const content = `<p>Shop Now</p>${embedded('A')}${embedded('B')}`;
+  app.elements.picker.onchange({ target: { files: [{ name: 'card.html', type: 'text/html', size: content.length, content }] } });
+  await flush();
+  assert.equal(app.calls.length, 1);
+  assert.equal(app.calls[0].body.text, 'Shop Now');
+  assert.equal(app.calls[0].body.media.images.length, 2);
+  const rendered = textTree(app.elements.cards);
+  assert.match(rendered, /sin errores/);
+  assert.match(rendered, /ni en sus imágenes\/video/);
+  assert.match(rendered, /Texto leído en imágenes\/video: ONE BAND TO TRACK/);
+  assert.match(rendered, /Shop Now/);
+});
+
+test('images left out by the limit are reported and never shown as a clean pass', async () => {
+  const app = setup({ fetchImpl: cleanReply('Visible') });
+  app.elements.key.value = 'token';
+  const content = '<p>Shop Now</p>' + 'ABCDEFGHIJKL'.split('').map(embedded).join('');
+  app.elements.picker.onchange({ target: { files: [{ name: 'many.html', type: 'text/html', size: content.length, content }] } });
+  await flush();
+  assert.equal(app.calls[0].body.media.images.length, 10);
+  const rendered = textTree(app.elements.cards);
+  assert.match(rendered, /revisión parcial/);
+  assert.match(rendered, /2 imagen\(es\)\/video no se enviaron/);
+  assert.doesNotMatch(rendered, /No se detectaron errores/);
+});

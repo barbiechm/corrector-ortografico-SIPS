@@ -114,9 +114,9 @@ test('extractEmbeddedMedia finds png+mp4, normalizes jpg, skips tiny images and 
   assert.ok(media.skipped >= 2, `expected at least 2 skipped, got ${media.skipped}`);
 });
 
-test('extractEmbeddedMedia caps at 6 images and keeps only the largest video', () => {
+test('extractEmbeddedMedia caps at 10 images, keeps only the largest video, and reports omissions', () => {
   const big = (ch) => ch.repeat(3000);
-  const images = 'ABCDEFGH'.split('')
+  const images = 'ABCDEFGHIJKL'.split('')
     .map((ch) => `<img src="data:image/png;base64,${big(ch)}">`)
     .join('\n');
   const videos = [
@@ -125,10 +125,13 @@ test('extractEmbeddedMedia caps at 6 images and keeps only the largest video', (
   ].join('\n');
 
   const media = OC.extractEmbeddedMedia(images + videos, '');
-  assert.equal(media.images.length, 6);
+  assert.equal(media.images.length, 10);
   assert.equal(media.videos.length, 1);
   assert.equal(media.videos[0].mimeType, 'video/webm');
   assert.ok(media.skipped >= 3, `expected at least 3 skipped, got ${media.skipped}`);
+  // 2 images over the cap + 1 extra video; icons/SVG would not count here.
+  assert.equal(media.omitted, 3);
+  assert.equal(OC.extractEmbeddedMedia('<img src="data:image/png;base64,' + big('A') + '"><img src="data:image/png;base64,AAAA">', '').omitted, 0);
 });
 
 test('normalizeIssues drops incomplete entries and fills type/source defaults', () => {

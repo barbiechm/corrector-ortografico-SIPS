@@ -178,8 +178,8 @@ test('text, counts and aggregate decoded media boundaries', async (t) => {
   await mocked(t, () => completion(), async (calls) => {
     assert.equal((await worker.fetch(request(input('x'.repeat(60_000))), env)).status, 200);
     await expectError(await worker.fetch(request(input('x'.repeat(60_001))), env), 413, 'INPUT_LIMIT_EXCEEDED');
-    assert.equal((await worker.fetch(request({ text: '', media: { images: Array(6).fill(png), videos: [mp4] } }), env)).status, 200);
-    for (const value of [{ text: '', media: { images: Array(7).fill(png), videos: [] } },
+    assert.equal((await worker.fetch(request({ text: '', media: { images: Array(10).fill(png), videos: [mp4] } }), env)).status, 200);
+    for (const value of [{ text: '', media: { images: Array(11).fill(png), videos: [] } },
       { text: '', media: { images: [], videos: [mp4, mp4] } }]) {
       await expectError(await worker.fetch(request(value), env), 413, 'INPUT_LIMIT_EXCEEDED');
     }

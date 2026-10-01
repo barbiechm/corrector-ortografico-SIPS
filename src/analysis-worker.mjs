@@ -126,7 +126,7 @@ function validateInput(input) {
   if (!exactKeys(input, ['text', 'media']) || typeof input.text !== 'string'
     || !exactKeys(input.media, ['images', 'videos'])
     || !Array.isArray(input.media.images) || !Array.isArray(input.media.videos)) throw invalidRequest();
-  if (input.text.length > 60_000 || input.media.images.length > 6 || input.media.videos.length > 1) {
+  if (input.text.length > 60_000 || input.media.images.length > 10 || input.media.videos.length > 1) {
     throw new PublicError(413, 'INPUT_LIMIT_EXCEEDED', 'El texto o la cantidad de archivos supera el límite permitido.');
   }
   let aggregate = 0;

@@ -370,7 +370,7 @@
       } else if (errors.length > 0) {
         badge.className = 'badge warn';
         badge.textContent = `${errors.length} error(es)` + (suggestions.length ? ` · ${suggestions.length} sugerencia(s)` : '');
-      } else if (it.discardedIssues > 0) {
+      } else if (it.discardedIssues > 0 || it.omittedMedia > 0) {
         // Con hallazgos descartados no se puede afirmar "sin errores".
         badge.className = 'badge warn';
         badge.textContent = 'revisión parcial' + (suggestions.length ? ` · ${suggestions.length} sugerencia(s)` : '');
@@ -405,22 +405,29 @@
         warning.textContent = `Se descartaron ${it.discardedIssues} hallazgo(s) que no se pudieron verificar contra el contenido. Usa “Volver a revisar todo” para confirmar.`;
         b.appendChild(warning);
       }
-      if (errors.length === 0 && suggestions.length === 0 && !it.unreadableText && !it.discardedIssues) {
-        const scope = it.mode === 'visual' ? 'en las imágenes/video' : 'en el texto del HTML';
+      if (it.omittedMedia > 0) {
+        const warning = document.createElement('div');
+        warning.className = 'hint';
+        warning.textContent = `${it.omittedMedia} imagen(es)/video no se enviaron por superar el límite de cantidad o tamaño. Su texto no se revisó.`;
+        b.appendChild(warning);
+      }
+      if (errors.length === 0 && suggestions.length === 0 && !it.unreadableText && !it.discardedIssues && !it.omittedMedia) {
+        const scope = { visual: 'en las imágenes/video', hybrid: 'en el texto del HTML ni en sus imágenes/video' }[it.mode] || 'en el texto del HTML';
         b.innerHTML = `<div class="why">No se detectaron errores ortográficos ni gramaticales ${scope}.</div>`;
       } else {
         [...errors, ...suggestions].forEach(iss => b.appendChild(buildIssueRow(iss)));
       }
-      if (it.mode === 'visual') {
+      if (it.mediaCount > 0) {
         const hint = document.createElement('div');
         hint.className = 'hint';
         hint.textContent = `Fuente: ${it.mediaCount} imagen(es)/video${it.uploadMedia ? ' del archivo' : ' embebido(s)'}.`;
         b.appendChild(hint);
         const pre = document.createElement('div');
         pre.className = 'extract on';
-        pre.textContent = 'Texto leído: ' + (it.extractedText || '(no se pudo extraer texto)');
+        pre.textContent = 'Texto leído en imágenes/video: ' + (it.extractedText || '(no se encontró texto)');
         b.appendChild(pre);
-      } else {
+      }
+      if (it.mode !== 'visual') {
         // ver el texto que se extrajo (para depurar)
         const toggle = document.createElement('span');
         toggle.className = 'toggle';
@@ -477,27 +484,22 @@
         it.discardedIssues = 0;
         it.extractedText = '';
         it.text = it.uploadMedia ? '' : OC.extractText(it.source, decodeEntities);
-        it.mode = 'text';
-        it.mediaCount = 0;
-        if (it.text.trim()) {
-          it.stage = 'revisando ortografía y gramática…'; render();
-          Object.assign(it, await callAnalysis(it.text, {}, key));
+        // El copy suele estar repartido: parte como texto HTML y parte dibujado
+        // dentro de las imágenes embebidas. Siempre se revisan ambos juntos.
+        it.stage = 'buscando imágenes y video…'; render();
+        const media = it.uploadMedia
+          || OC.extractEmbeddedMedia(OC.decodeMultiple(it.source, decodeEntities), it.source);
+        const hasText = Boolean(it.text.trim());
+        it.mediaCount = media.images.length + media.videos.length;
+        it.omittedMedia = media.omitted || 0;
+        it.mode = hasText && it.mediaCount ? 'hybrid' : it.mediaCount ? 'visual' : 'text';
+        if (hasText || it.mediaCount) {
+          it.stage = it.mediaCount ? 'leyendo texto e imágenes…' : 'revisando ortografía y gramática…'; render();
+          Object.assign(it, await callAnalysis(hasText ? it.text : '', it.mediaCount ? media : {}, key));
           it.status = 'done';
         } else {
-          it.stage = 'buscando imágenes y video…'; render();
-          const decoded = it.uploadMedia ? '' : OC.decodeMultiple(it.source, decodeEntities);
-          const media = it.uploadMedia || OC.extractEmbeddedMedia(decoded, it.source);
-          const mediaCount = media.images.length + media.videos.length;
-          if (mediaCount > 0) {
-            it.mode = 'visual';
-            it.mediaCount = mediaCount;
-            it.stage = 'leyendo imágenes y video…'; render();
-            Object.assign(it, await callAnalysis('', media, key));
-            it.status = 'done';
-          } else {
-            it.issues = [];
-            it.status = 'empty';
-          }
+          it.issues = [];
+          it.status = 'empty';
         }
       } catch (err) {
         it.status = 'error';

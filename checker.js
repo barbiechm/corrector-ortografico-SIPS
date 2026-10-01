@@ -122,7 +122,7 @@
   // visually instead.
 
   const MIN_IMAGE_BASE64_BYTES = 2 * 1024; // skip icons/spacers under ~2 KB
-  const MAX_MEDIA_IMAGES = 6;
+  const MAX_MEDIA_IMAGES = 10;
   const MAX_MEDIA_VIDEOS = 1;
   // Bound embedded media payloads independently of the provider.
   const MAX_MEDIA_TOTAL_BASE64_BYTES = 14 * 1024 * 1024;
@@ -207,6 +207,8 @@
       images: selectedImages.map(({ mimeType, data }) => ({ mimeType, data })),
       videos: selectedVideos.map(({ mimeType, data }) => ({ mimeType, data })),
       skipped,
+      // Usable media left out by the count or size limits (not icons/SVG): its text goes unreviewed.
+      omitted: imageCandidates.length + videoCandidates.length - selectedImages.length - selectedVideos.length,
     };
   }
 
