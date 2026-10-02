@@ -293,6 +293,19 @@ test('unverifiable or no-op findings are discarded and counted, never reported a
   });
 });
 
+test('findings quoted across a layout line break are kept, and the prompt treats breaks as layout', async (t) => {
+  const issue = { original: 'Trust is everyting', suggestion: 'Trust is everything', reason: 'Errata.',
+    lang: 'en', type: 'error', source: 'text' };
+  await mocked(t, () => completion({ ...clean, issues: [issue] }), async (calls) => {
+    const response = await worker.fetch(request(input('"Trust is\neveryting"\nShop Now')), env);
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.deepEqual(body.issues, [issue]);
+    assert.equal(body.discardedIssues, 0);
+    assert.match(JSON.parse(calls[0][1].body).messages[0].content, /Line breaks[\s\S]*are layout, not language/);
+  });
+});
+
 test('media-only requests send no empty text part upstream', async (t) => {
   const value = { text: '  ', media: { images: [png], videos: [] } };
   await mocked(t, () => completion({ ...clean, extractedText: 'Visible' }), async (calls) => {

@@ -71,8 +71,14 @@
   const INLINE_TAG_RE = new RegExp(`</?(?:${INLINE_TAG_NAMES.join('|')})\\b[^>]*>`, 'gi');
   const BR_TAG_RE = /<br\s*\/?>/gi;
 
+  // An inline tag styled as a block starts a new visual line (the banner tool
+  // animates copy line by line this way), so it separates words like a <br>.
+  // Per-character animation uses inline-block and must keep letters together.
+  const BLOCK_DISPLAY_RE = /\bdisplay\s*:\s*(?:block|flex|grid|list-item|table)\b/i;
+
   function stripInlineTags(html) {
-    return html.replace(BR_TAG_RE, ' ').replace(INLINE_TAG_RE, '');
+    return html.replace(BR_TAG_RE, ' ')
+      .replace(INLINE_TAG_RE, (tag) => (BLOCK_DISPLAY_RE.test(tag) ? ' ' : ''));
   }
 
   // Desescapar varios niveles (iframe srcdoc anidado).

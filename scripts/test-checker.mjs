@@ -230,3 +230,12 @@ test('parseAnalysisResponse counts server- and client-discarded findings', () =>
   const legacy = OC.parseAnalysisResponse({ issues: [], extractedText: '', unreadableText: false, model: 'provider/model' });
   assert.equal(legacy.discardedIssues, 0);
 });
+
+test('block-styled spans separate lines while per-character inline-block spans stay joined', () => {
+  const line = (text) => `<span style="display: block; white-space: pre-wrap;">${text}</span>`;
+  const letter = (ch) => `<span style="display: inline-block; white-space: pre-wrap;">${ch}</span>`;
+  const source = `<div>${line('right away and within')}${line('weeks, my energy became')}${line('steadier.')}</div>`
+    + `<div>${'Feel it'.split('').map(letter).join('')}</div>`;
+  const text = OC.extractText(source, decodeEntities);
+  assert.equal(text, 'right away and within weeks, my energy became steadier.\nFeel it');
+});

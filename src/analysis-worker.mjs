@@ -17,6 +17,10 @@ identical to the original. Mark objective mistakes as error; optional stylistic 
 and offer suggestions sparingly. Explain reasons in Spanish. Preserve the original exact fragment
 and provide the smallest appropriate correction. Set lang to es or en for each issue.
 Set source to text, image, or video according to where the fragment actually appeared.
+Line breaks in the supplied text and in visual media are layout, not language: a sentence may
+continue on the next line. Read consecutive lines together when they form one sentence, and never
+report a line break as a missing space, missing punctuation, an unclosed quotation, or a
+capitalization error. When an issue spans a line break, write it in original with a single space.
 Transcribe visible image/video text exactly in extractedText, in input order, separating sources
 with newlines. Never guess, complete, or hallucinate illegible text. Set unreadableText to true
 when any visible text cannot be read reliably; include only legible text in extractedText.
@@ -175,6 +179,9 @@ function validatedResult(value, input, model) {
   if (input.text.trim()) sources.add('text');
   if (input.media.images.length) sources.add('image');
   if (input.media.videos.length) sources.add('video');
+  // A fragment quoted across a layout line break still belongs to the input.
+  const collapse = (text) => text.replace(/\s+/g, ' ').trim();
+  const suppliedText = collapse(input.text);
   const issues = [];
   for (const issue of value.issues) {
     // A malformed issue means the schema was not honored: reject the whole result.
@@ -186,7 +193,7 @@ function validatedResult(value, input, model) {
     // A well-formed issue that cannot be traced to the input, or changes nothing, is
     // discarded on its own. It is counted so the caller never reports a clean pass.
     if (!sources.has(issue.source)
-      || (issue.source === 'text' && !input.text.includes(issue.original))
+      || (issue.source === 'text' && !suppliedText.includes(collapse(issue.original)))
       || issue.suggestion.trim() === issue.original.trim()) continue;
     issues.push(Object.fromEntries(ISSUE_FIELDS.map((key) => [key, issue[key]])));
   }
