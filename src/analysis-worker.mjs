@@ -21,8 +21,13 @@ Line breaks in the supplied text and in visual media are layout, not language: a
 continue on the next line. Read consecutive lines together when they form one sentence, and never
 report a line break as a missing space, missing punctuation, an unclosed quotation, or a
 capitalization error. When an issue spans a line break, write it in original with a single space.
+The images are layers of one composed advertisement and may be stacked: an overlay image often
+covers and replaces text in a background image. When one image shows a clipped, truncated, or
+garbled version of a line that another image shows complete, the complete one is what the viewer
+sees: do not report the covered version, but still transcribe both in extractedText.
 Transcribe visible image/video text exactly in extractedText, in input order, separating sources
-with newlines. Never guess, complete, or hallucinate illegible text. Set unreadableText to true
+with newlines. Write each distinct piece of text once: when the same text repeats (a logo or label
+printed on several products), transcribe it a single time and never repeat it. Never guess, complete, or hallucinate illegible text. Set unreadableText to true
 when any visible text cannot be read reliably; include only legible text in extractedText.
 Do not include the supplied text in extractedText. With no visual media use extractedText ""
 and unreadableText false. Return only the requested JSON schema, including every required field.
@@ -49,10 +54,12 @@ const OUTPUT_SCHEMA = {
 };
 
 class PublicError extends Error {
-  constructor(status, code, message) {
+  constructor(status, code, message, detail) {
     super(message);
     this.status = status;
     this.code = code;
+    // Names the failed check only (never model output or secrets), so failures can be diagnosed.
+    this.detail = detail;
   }
 }
 
@@ -60,8 +67,8 @@ function invalidRequest() {
   return new PublicError(400, 'INVALID_REQUEST', 'El contenido de la solicitud no es válido.');
 }
 
-function invalidOutput() {
-  return new PublicError(502, 'UPSTREAM_INVALID_RESPONSE', 'El análisis devolvió una respuesta no válida.');
+function invalidOutput(detail) {
+  return new PublicError(502, 'UPSTREAM_INVALID_RESPONSE', 'El análisis devolvió una respuesta no válida.', detail);
 }
 
 function exactKeys(value, keys) {
@@ -162,6 +169,13 @@ function validateInput(input) {
   return input;
 }
 
+// True when the fragment also appears as part of a longer word, i.e. a complete version exists.
+function clippedElsewhere(visibleText, fragment) {
+  if (!fragment) return false;
+  const escaped = fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?<=\\p{L})${escaped}|${escaped}(?=\\p{L})`, 'u').test(visibleText);
+}
+
 function configuredModel(env) {
   const model = env.OPENROUTER_MODEL ?? DEFAULT_MODEL;
   // Only explicit provider/model identifiers: no routing aliases or variant suffixes.
@@ -174,7 +188,7 @@ function configuredModel(env) {
 
 function validatedResult(value, input, model) {
   if (!exactKeys(value, OUTPUT_FIELDS) || !Array.isArray(value.issues)
-    || typeof value.extractedText !== 'string' || typeof value.unreadableText !== 'boolean') throw invalidOutput();
+    || typeof value.extractedText !== 'string' || typeof value.unreadableText !== 'boolean') throw invalidOutput('result_shape');
   const sources = new Set();
   if (input.text.trim()) sources.add('text');
   if (input.media.images.length) sources.add('image');
@@ -182,24 +196,38 @@ function validatedResult(value, input, model) {
   // A fragment quoted across a layout line break still belongs to the input.
   const collapse = (text) => text.replace(/\s+/g, ' ').trim();
   const suppliedText = collapse(input.text);
+  // Everything the composed advertisement shows, across its text and every image layer.
+  const visibleText = collapse(`${input.text}\n${value.extractedText}`);
   const issues = [];
+  let covered = 0;
   for (const issue of value.issues) {
     // A malformed issue means the schema was not honored: reject the whole result.
     if (!exactKeys(issue, ISSUE_FIELDS)
-      || !['original', 'suggestion', 'reason'].every((key) => typeof issue[key] === 'string')
-      || !issue.original.trim() || !issue.reason.trim()
-      || !['es', 'en'].includes(issue.lang) || !['error', 'suggestion'].includes(issue.type)
-      || !['text', 'image', 'video'].includes(issue.source)) throw invalidOutput();
+      || !['original', 'suggestion', 'reason'].every((key) => typeof issue[key] === 'string')) throw invalidOutput('issue_shape');
+    if (!issue.original.trim()) throw invalidOutput('issue_original_empty');
+    if (!issue.reason.trim()) throw invalidOutput('issue_reason_empty');
+    if (!['es', 'en'].includes(issue.lang)) throw invalidOutput('issue_lang');
+    if (!['error', 'suggestion'].includes(issue.type)) throw invalidOutput('issue_type');
+    if (!['text', 'image', 'video'].includes(issue.source)) throw invalidOutput('issue_source');
     // A well-formed issue that cannot be traced to the input, or changes nothing, is
     // discarded on its own. It is counted so the caller never reports a clean pass.
     if (!sources.has(issue.source)
       || (issue.source === 'text' && !suppliedText.includes(collapse(issue.original)))
       || issue.suggestion.trim() === issue.original.trim()) continue;
+    // Images are stacked layers: an overlay covers a flawed background. When another layer
+    // shows the corrected text, or the fragment complete, the flaw is hidden in the composed
+    // advertisement, so it is not a finding. Both versions stay visible in extractedText.
+    if (issue.source !== 'text'
+      && (visibleText.includes(collapse(issue.suggestion)) || clippedElsewhere(visibleText, collapse(issue.original)))) {
+      covered += 1;
+      continue;
+    }
     issues.push(Object.fromEntries(ISSUE_FIELDS.map((key) => [key, issue[key]])));
   }
   if (!input.media.images.length && !input.media.videos.length
-    && (value.extractedText !== '' || value.unreadableText)) throw invalidOutput();
-  return { issues, discardedIssues: value.issues.length - issues.length,
+    && (value.extractedText !== '' || value.unreadableText)) throw invalidOutput('visual_fields_without_media');
+  // Covered findings are resolved, not unverifiable: they do not make the review partial.
+  return { issues, discardedIssues: value.issues.length - issues.length - covered,
     extractedText: value.extractedText, unreadableText: value.unreadableText, model };
 }
 
@@ -252,9 +280,10 @@ async function analyze(input, env, model) {
       envelope = JSON.parse(await readBounded(response.body, RESPONSE_LIMIT, oversized, controller.signal));
     } catch (cause) {
       if (cause instanceof PublicError) throw cause;
-      throw invalidOutput();
+      throw invalidOutput('envelope_json');
     }
-    if (envelope?.error || !Array.isArray(envelope?.choices) || envelope.choices.length !== 1) throw invalidOutput();
+    if (envelope?.error) throw invalidOutput('envelope_error');
+    if (!Array.isArray(envelope?.choices) || envelope.choices.length !== 1) throw invalidOutput('envelope_choices');
     const choice = envelope.choices[0];
     if (choice?.finish_reason === 'length') {
       throw new PublicError(502, 'UPSTREAM_TRUNCATED', 'El análisis devolvió una respuesta incompleta.');
@@ -262,10 +291,15 @@ async function analyze(input, env, model) {
     if (choice?.message?.refusal || choice?.finish_reason === 'content_filter') {
       throw new PublicError(502, 'UPSTREAM_REFUSAL', 'No se pudo analizar el contenido enviado.');
     }
-    if (choice?.finish_reason !== 'stop' || typeof choice.message?.content !== 'string'
-      || choice.message.tool_calls?.length) throw invalidOutput();
+    if (choice?.finish_reason !== 'stop') {
+      const reason = typeof choice?.finish_reason === 'string' && /^[a-z_]{1,24}$/i.test(choice.finish_reason)
+        ? choice.finish_reason.toLowerCase() : 'unknown';
+      throw invalidOutput(`finish_reason_${reason}`);
+    }
+    if (typeof choice.message?.content !== 'string') throw invalidOutput('content_missing');
+    if (choice.message.tool_calls?.length) throw invalidOutput('tool_calls');
     let result;
-    try { result = JSON.parse(choice.message.content); } catch { throw invalidOutput(); }
+    try { result = JSON.parse(choice.message.content); } catch { throw invalidOutput('content_json'); }
     return validatedResult(result, input, model);
   };
   try {
@@ -324,7 +358,9 @@ export default {
     } catch (cause) {
       const failure = cause instanceof PublicError ? cause
         : new PublicError(500, 'INTERNAL_ERROR', 'No se pudo procesar la solicitud.');
-      return reply(failure.status, { error: { code: failure.code, message: failure.message } });
+      const error = { code: failure.code, message: failure.message };
+      if (failure.detail) error.detail = failure.detail;
+      return reply(failure.status, { error });
     }
   },
 };

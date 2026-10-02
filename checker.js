@@ -271,8 +271,14 @@
   }
 
   function parseAnalysisResponse(payload) {
-    if (payload?.error) throw new Error(typeof payload.error.message === 'string' && payload.error.message
-      ? payload.error.message : 'No se pudo completar el análisis.');
+    if (payload?.error) {
+      const message = typeof payload.error.message === 'string' && payload.error.message
+        ? payload.error.message : 'No se pudo completar el análisis.';
+      // The service names the failed check (never content) so failures can be reported.
+      const detail = typeof payload.error.detail === 'string' && /^[a-z_]{1,48}$/.test(payload.error.detail)
+        ? ` (diagnóstico: ${payload.error.detail})` : '';
+      throw new Error(message + detail);
+    }
     if (!payload || !Array.isArray(payload.issues) || typeof payload.extractedText !== 'string'
       || typeof payload.unreadableText !== 'boolean' || typeof payload.model !== 'string') {
       throw new Error('El servicio de análisis devolvió una respuesta inválida.');

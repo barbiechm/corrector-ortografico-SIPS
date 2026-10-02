@@ -239,3 +239,9 @@ test('block-styled spans separate lines while per-character inline-block spans s
   const text = OC.extractText(source, decodeEntities);
   assert.equal(text, 'right away and within weeks, my energy became steadier.\nFeel it');
 });
+
+test('parseAnalysisResponse appends a safe diagnostic code to service errors', () => {
+  assert.throws(() => OC.parseAnalysisResponse({ error: { message: 'Falló.', detail: 'issue_lang' } }),
+    /Falló\. \(diagnóstico: issue_lang\)/);
+  assert.throws(() => OC.parseAnalysisResponse({ error: { message: 'Falló.', detail: '<b>x</b>' } }), /^Error: Falló\.$/);
+});

@@ -306,6 +306,50 @@ test('findings quoted across a layout line break are kept, and the prompt treats
   });
 });
 
+test('invalid results name the failed check without exposing model output', async (t) => {
+  const issue = { original: 'Hello', suggestion: 'Hi', reason: 'Optional', lang: 'en', type: 'suggestion', source: 'text' };
+  const cases = [
+    [completion({ ...clean, issues: [{ ...issue, reason: ' ' }] }), 'issue_reason_empty'],
+    [completion({ ...clean, issues: [{ ...issue, lang: 'fr' }] }), 'issue_lang'],
+    [completion({ ...clean, extra: 'secret model text' }), 'result_shape'],
+    [completion(clean, { message: { content: 'secret model text {' } }), 'content_json'],
+    [completion(clean, { finish_reason: 'tool_calls' }), 'finish_reason_tool_calls'],
+    [completion(clean, { finish_reason: 'secret model text!' }), 'finish_reason_unknown'],
+    [Response.json({ error: { message: 'sensitive-provider-detail' } }), 'envelope_error'],
+  ];
+  let response;
+  await mocked(t, () => response, async () => {
+    for (const [value, detail] of cases) {
+      response = value;
+      const result = await worker.fetch(request(), env);
+      assert.equal(result.status, 502);
+      const body = await result.json();
+      assert.equal(body.error.code, 'UPSTREAM_INVALID_RESPONSE');
+      assert.equal(body.error.detail, detail);
+      assert.doesNotMatch(JSON.stringify(body), /secret model text|sensitive-provider-detail/);
+    }
+  });
+});
+
+test('image findings that another layer shows complete or corrected are covered, not reported', async (t) => {
+  const base = { reason: 'Falta una letra.', lang: 'en', type: 'error', source: 'image' };
+  const value = { text: 'Shop Now', media: { images: [png, png], videos: [] } };
+  const extractedText = 'Buy 3 Months.\net 1 Month FREE.\nRecieve it today\nBuy 3 Months.\nGet 1 Month FREE.';
+  const result = { issues: [
+    { ...base, original: 'et 1 Month FREE.', suggestion: 'and 1 Month FREE.' },   // clipped: complete elsewhere
+    { ...base, original: 'et 1 Month FREE.', suggestion: 'Get 1 Month FREE.' },   // corrected elsewhere
+    { ...base, original: 'Recieve it today', suggestion: 'Receive it today' },    // genuine, visible error
+  ], extractedText, unreadableText: false };
+  await mocked(t, () => completion(result), async (calls) => {
+    const body = await (await worker.fetch(request(value), env)).json();
+    assert.deepEqual(body.issues.map((issue) => issue.original), ['Recieve it today']);
+    assert.equal(body.issues[0].type, 'error');
+    assert.equal(body.discardedIssues, 0);
+    assert.match(body.extractedText, /et 1 Month FREE\.[\s\S]*Get 1 Month FREE\./);
+    assert.match(JSON.parse(calls[0][1].body).messages[0].content, /transcribe it a single time/);
+  });
+});
+
 test('media-only requests send no empty text part upstream', async (t) => {
   const value = { text: '  ', media: { images: [png], videos: [] } };
   await mocked(t, () => completion({ ...clean, extractedText: 'Visible' }), async (calls) => {
