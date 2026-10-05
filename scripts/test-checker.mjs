@@ -114,7 +114,7 @@ test('extractEmbeddedMedia finds png+mp4, normalizes jpg, skips tiny images and 
   assert.ok(media.skipped >= 2, `expected at least 2 skipped, got ${media.skipped}`);
 });
 
-test('extractEmbeddedMedia caps at 10 images, keeps only the largest video, and reports omissions', () => {
+test('extractEmbeddedMedia caps at 10 images, keeps videos largest first, and reports omissions', () => {
   const big = (ch) => ch.repeat(3000);
   const images = 'ABCDEFGHIJKL'.split('')
     .map((ch) => `<img src="data:image/png;base64,${big(ch)}">`)
@@ -126,12 +126,56 @@ test('extractEmbeddedMedia caps at 10 images, keeps only the largest video, and 
 
   const media = OC.extractEmbeddedMedia(images + videos, '');
   assert.equal(media.images.length, 10);
-  assert.equal(media.videos.length, 1);
-  assert.equal(media.videos[0].mimeType, 'video/webm');
-  assert.ok(media.skipped >= 3, `expected at least 3 skipped, got ${media.skipped}`);
-  // 2 images over the cap + 1 extra video; icons/SVG would not count here.
-  assert.equal(media.omitted, 3);
+  assert.equal(media.videos.length, 2);
+  assert.deepEqual(plain(media.videos.map((v) => v.mimeType)), ['video/webm', 'video/mp4']);
+  assert.ok(media.skipped >= 2, `expected at least 2 skipped, got ${media.skipped}`);
+  // 2 images over the cap; icons/SVG would not count here.
+  assert.equal(media.omitted, 2);
   assert.equal(OC.extractEmbeddedMedia('<img src="data:image/png;base64,' + big('A') + '"><img src="data:image/png;base64,AAAA">', '').omitted, 0);
+});
+
+test('extractEmbeddedMedia sends up to 4 videos, largest first, and omits the fifth', () => {
+  assert.equal(OC.MAX_MEDIA_VIDEOS, 4);
+  const video = (ch, length) => `<video src="data:video/mp4;base64,${ch.repeat(length)}"></video>`;
+  const source = [video('A', 400), video('B', 800), video('C', 1200), video('D', 1600), video('E', 2000)].join('\n');
+  const media = OC.extractEmbeddedMedia(source, '');
+  assert.equal(media.videos.length, 4);
+  assert.deepEqual(plain(media.videos.map((v) => v.data[0])), ['E', 'D', 'C', 'B']);
+  assert.equal(media.images.length, 0);
+  assert.equal(media.omitted, 1);
+  assert.equal(media.skipped, 1);
+
+  const four = OC.extractEmbeddedMedia(source.split('\n').slice(1).join('\n'), '');
+  assert.equal(four.videos.length, 4);
+  assert.equal(four.omitted, 0);
+});
+
+test('extractEmbeddedMedia keeps the 14 MiB aggregate budget across several videos', () => {
+  const mib = 1024 * 1024;
+  // About 6 MiB decoded each: a third large video would exceed the budget, the small one still fits.
+  const video = (ch) => `<video src="data:video/mp4;base64,${ch.repeat(Math.ceil(6 * mib * 4 / 3))}"></video>`;
+  const small = `<video src="data:video/mp4;base64,${'S'.repeat(1000)}"></video>`;
+  const media = OC.extractEmbeddedMedia([video('A'), video('B'), video('C'), small].join('\n'), '');
+  assert.equal(media.videos.length, 3);
+  assert.deepEqual(plain(media.videos.map((v) => v.data[0])).sort(), ['A', 'B', 'S']);
+  assert.equal(media.omitted, 1);
+});
+
+test('extractEmbeddedMedia counts an image omitted by the aggregate byte budget', () => {
+  const dataUri = (size, fill) => {
+    const bytes = Buffer.alloc(size, fill);
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(bytes);
+    return `data:image/png;base64,${bytes.toString('base64')}`;
+  };
+  const first = dataUri(10 * 1024 * 1024, 1);
+  const second = dataUri(5 * 1024 * 1024, 2);
+  const source = `<img src="${first}"><img src="${second}">`;
+  const media = OC.extractEmbeddedMedia(source, '');
+  assert.equal(media.images.length, 1);
+  assert.equal(media.images[0].data, first.split(',')[1]);
+  assert.equal(media.videos.length, 0);
+  assert.equal(media.omitted, 1);
+  assert.equal(media.skipped, 1);
 });
 
 test('normalizeIssues drops incomplete entries and fills type/source defaults', () => {

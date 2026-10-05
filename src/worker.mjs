@@ -190,11 +190,14 @@ function publicFileMetadata(file) {
   };
 }
 
-async function fetchHtmlFile(file, apiKey) {
+function fileTooLarge(file) {
+  return Object.assign(new Error(`${file.name} exceeds the 5 MiB file limit`), { code: 'FILE_TOO_LARGE', status: 422 });
+}
+
+// Checks the declared and announced sizes and returns the Drive media response unread.
+async function openHtmlFile(file, apiKey) {
   const declaredSize = Number(file.size);
-  if (Number.isFinite(declaredSize) && declaredSize > MAX_FILE_BYTES) {
-    throw Object.assign(new Error(`${file.name} exceeds the 5 MiB file limit`), { code: 'FILE_TOO_LARGE', status: 422 });
-  }
+  if (Number.isFinite(declaredSize) && declaredSize > MAX_FILE_BYTES) throw fileTooLarge(file);
 
   const response = await fetchDrive(driveUrl(`/drive/v3/files/${file.id}`, { alt: 'media' }, apiKey));
   if (!response.ok) {
@@ -203,20 +206,50 @@ async function fetchHtmlFile(file, apiKey) {
 
   const contentLength = Number(response.headers.get('Content-Length'));
   if (Number.isFinite(contentLength) && contentLength > MAX_FILE_BYTES) {
-    throw Object.assign(new Error(`${file.name} exceeds the 5 MiB file limit`), { code: 'FILE_TOO_LARGE', status: 422 });
+    void response.body?.cancel().catch(() => {});
+    throw fileTooLarge(file);
   }
+  return response;
+}
+
+async function fetchHtmlFile(file, apiKey) {
+  const response = await openHtmlFile(file, apiKey);
 
   let bytes;
   try {
     bytes = await readLimitedBytes(response.body, MAX_FILE_BYTES);
   } catch (cause) {
-    if (cause instanceof RangeError) {
-      throw Object.assign(new Error(`${file.name} exceeds the 5 MiB file limit`), { code: 'FILE_TOO_LARGE', status: 422 });
-    }
+    if (cause instanceof RangeError) throw fileTooLarge(file);
     throw cause;
   }
 
   return { name: file.name, content: new TextDecoder().decode(bytes), byteLength: bytes.byteLength };
+}
+
+// Counts bytes only; errors the stream (aborting the response) once the limit is exceeded.
+function byteLimitStream(limit) {
+  let total = 0;
+  return new TransformStream({
+    transform(chunk, controller) {
+      total += chunk.byteLength;
+      if (total > limit) {
+        controller.error(new RangeError('limit exceeded'));
+        return;
+      }
+      controller.enqueue(chunk);
+    },
+  });
+}
+
+// Streams one HTML file straight through: no decoding or JSON encoding, so CPU stays minimal.
+async function streamHtmlFile(request, env, file) {
+  const upstream = await openHtmlFile(file, env.GOOGLE_DRIVE_API_KEY);
+  const headers = getCorsHeaders(request, env);
+  headers.set('Content-Type', 'text/html; charset=utf-8');
+  headers.set('Cache-Control', 'no-store');
+  headers.set('X-Content-Type-Options', 'nosniff');
+  const body = upstream.body ? upstream.body.pipeThrough(byteLimitStream(MAX_FILE_BYTES)) : null;
+  return new Response(body, { status: 200, headers });
 }
 
 export default {
@@ -240,8 +273,11 @@ export default {
     if (!folderId) {
       return error(request, env, 400, 'INVALID_FOLDER_URL', 'Provide an HTTPS drive.google.com folder link.');
     }
-    if (!['list', 'download'].includes(body?.action)) {
-      return error(request, env, 400, 'INVALID_REQUEST', 'Use the list or download import action.');
+    if (!['list', 'file', 'download'].includes(body?.action)) {
+      return error(request, env, 400, 'INVALID_REQUEST', 'Use the list, file, or download import action.');
+    }
+    if (body.action === 'file' && (typeof body.fileId !== 'string' || !DRIVE_FOLDER_ID.test(body.fileId))) {
+      return error(request, env, 400, 'INVALID_FILE_SELECTION', 'Select one listed HTML file.');
     }
 
     try {
@@ -253,6 +289,16 @@ export default {
           limits: { maxFileBytes: MAX_FILE_BYTES, maxDownloadBatchFiles: MAX_DOWNLOAD_BATCH_FILES },
         });
       }
+
+      if (body.action === 'file') {
+        const file = listedFiles.find((listed) => listed.id === body.fileId);
+        if (!file) {
+          return error(request, env, 422, 'FILE_NOT_IN_FOLDER', 'Each selected file must belong to the requested public folder.');
+        }
+        return await streamHtmlFile(request, env, file);
+      }
+
+      // Legacy batch action, kept while older UI deployments are still in use.
 
       const fileIds = body.fileIds;
       if (!Array.isArray(fileIds) || fileIds.length === 0 || fileIds.length > MAX_DOWNLOAD_BATCH_FILES

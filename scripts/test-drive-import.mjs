@@ -258,3 +258,108 @@ test('returns safe classifications for Drive HTTP failures, redirects, and netwo
   assert.equal(response.status, 503);
   assert.deepEqual(body.error, { code: 'DRIVE_NETWORK_ERROR', message: 'Drive could not be reached.' });
 });
+
+function fileRequest(id = fileId) {
+  return importRequest({ action: 'file', fileId: id });
+}
+
+test('streams one authorized HTML file as text/html after relisting the folder', async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const html = '<p>Oferta única</p>';
+  const calls = [];
+  globalThis.fetch = async (url) => {
+    const parsed = new URL(url);
+    calls.push(parsed);
+    if (parsed.pathname === '/drive/v3/files') return listing([{ id: fileId, name: 'single.html', size: '21' }]);
+    return new Response(html);
+  };
+
+  const response = await worker.fetch(fileRequest(), { ...env, ALLOWED_ORIGINS: '' });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('Content-Type'), 'text/html; charset=utf-8');
+  assert.equal(response.headers.get('Cache-Control'), 'no-store');
+  assert.equal(response.headers.get('Access-Control-Allow-Origin'), '*');
+  assert.equal(await response.text(), html);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].pathname, '/drive/v3/files');
+  assert.equal(calls[1].pathname, `/drive/v3/files/${fileId}`);
+  assert.equal(calls[1].searchParams.get('alt'), 'media');
+});
+
+test('file action rejects an ID outside the folder or malformed without downloading', async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const calls = [];
+  globalThis.fetch = async (url) => {
+    calls.push(new URL(url));
+    return listing([{ id: fileId, name: 'allowed.html', size: '10' }]);
+  };
+
+  let response = await worker.fetch(fileRequest(otherFileId), env);
+  assert.equal(response.status, 422);
+  assert.match(response.headers.get('Content-Type'), /application\/json/);
+  assert.deepEqual((await responseBody(response)).error, {
+    code: 'FILE_NOT_IN_FOLDER',
+    message: 'Each selected file must belong to the requested public folder.',
+  });
+  assert.equal(calls.length, 1);
+
+  response = await worker.fetch(fileRequest('../bad'), env);
+  assert.equal(response.status, 400);
+  assert.equal((await responseBody(response)).error.code, 'INVALID_FILE_SELECTION');
+  assert.equal(calls.length, 1);
+});
+
+test('file action rejects a declared or announced size over 5 MiB as JSON', async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const calls = [];
+  globalThis.fetch = async (url) => {
+    calls.push(new URL(url));
+    return listing([{ id: fileId, name: 'too-large.html', size: String(fiveMiB + 1) }]);
+  };
+
+  let response = await worker.fetch(fileRequest(), env);
+  assert.equal(response.status, 422);
+  assert.equal((await responseBody(response)).error.code, 'FILE_TOO_LARGE');
+  assert.equal(calls.length, 1);
+
+  globalThis.fetch = async (url) => {
+    const parsed = new URL(url);
+    if (parsed.pathname === '/drive/v3/files') return listing([{ id: fileId, name: 'unsized.html' }]);
+    return new Response('x', { headers: { 'Content-Length': String(fiveMiB + 1) } });
+  };
+  response = await worker.fetch(fileRequest(), env);
+  assert.equal(response.status, 422);
+  assert.equal((await responseBody(response)).error.code, 'FILE_TOO_LARGE');
+});
+
+test('file action streams exactly 5 MiB and aborts a stream that grows past it', async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const chunk = new Uint8Array(1024 * 1024).fill(120);
+  let chunks;
+  const upstream = () => new ReadableStream({
+    pull(controller) {
+      if (chunks-- > 0) controller.enqueue(chunk);
+      else controller.close();
+    },
+  });
+  globalThis.fetch = async (url) => {
+    const parsed = new URL(url);
+    // No declared size and no Content-Length: only the streaming guard can stop it.
+    if (parsed.pathname === '/drive/v3/files') return listing([{ id: fileId, name: 'stream.html' }]);
+    return new Response(upstream());
+  };
+
+  chunks = 5;
+  let response = await worker.fetch(fileRequest(), env);
+  assert.equal(response.status, 200);
+  assert.equal((await response.arrayBuffer()).byteLength, fiveMiB);
+
+  chunks = 6;
+  response = await worker.fetch(fileRequest(), env);
+  assert.equal(response.status, 200);
+  await assert.rejects(response.arrayBuffer(), /limit exceeded/);
+});

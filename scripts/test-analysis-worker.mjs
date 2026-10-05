@@ -179,8 +179,9 @@ test('text, counts and aggregate decoded media boundaries', async (t) => {
     assert.equal((await worker.fetch(request(input('x'.repeat(60_000))), env)).status, 200);
     await expectError(await worker.fetch(request(input('x'.repeat(60_001))), env), 413, 'INPUT_LIMIT_EXCEEDED');
     assert.equal((await worker.fetch(request({ text: '', media: { images: Array(10).fill(png), videos: [mp4] } }), env)).status, 200);
+    assert.equal((await worker.fetch(request({ text: '', media: { images: [], videos: Array(4).fill(mp4) } }), env)).status, 200);
     for (const value of [{ text: '', media: { images: Array(11).fill(png), videos: [] } },
-      { text: '', media: { images: [], videos: [mp4, mp4] } }]) {
+      { text: '', media: { images: [], videos: Array(5).fill(mp4) } }]) {
       await expectError(await worker.fetch(request(value), env), 413, 'INPUT_LIMIT_EXCEEDED');
     }
     const bytes = Buffer.alloc(14 * MiB);
@@ -188,7 +189,20 @@ test('text, counts and aggregate decoded media boundaries', async (t) => {
     const big = media('image/png', bytes);
     assert.equal((await worker.fetch(request({ text: '', media: { images: [big], videos: [] } }), env)).status, 200);
     await expectError(await worker.fetch(request({ text: '', media: { images: [big, png], videos: [] } }), env), 413, 'MEDIA_TOO_LARGE');
-    assert.equal(calls.length, 3);
+    assert.equal(calls.length, 4);
+  });
+});
+
+test('four embedded videos are forwarded in input order within one paid request', async (t) => {
+  const webm = media('video/webm', [26, 69, 223, 163]);
+  const videos = [mp4, webm, mp4, webm];
+  await mocked(t, () => completion(), async (calls) => {
+    const response = await worker.fetch(request({ text: '', media: { images: [], videos } }), env);
+    assert.equal(response.status, 200);
+    assert.equal(calls.length, 1);
+    const parts = JSON.parse(calls[0][1].body).messages[1].content.filter((part) => part.type === 'video_url');
+    assert.deepEqual(parts.map((part) => part.video_url.url),
+      videos.map((video) => `data:${video.mimeType};base64,${video.data}`));
   });
 });
 
@@ -331,13 +345,57 @@ test('invalid results name the failed check without exposing model output', asyn
   });
 });
 
-test('image findings that another layer shows complete or corrected are covered, not reported', async (t) => {
+test('literal error finish reason is rejected with a safe diagnostic and no retry', async (t) => {
+  await mocked(t, () => completion(clean, { finish_reason: 'error' }), async (calls) => {
+    const response = await worker.fetch(request(), env);
+    assert.equal(response.status, 502);
+    assert.equal(calls.length, 1);
+    const body = await response.json();
+    assert.equal(body.error.code, 'UPSTREAM_INVALID_RESPONSE');
+    assert.equal(body.error.detail, 'finish_reason_error');
+    assert.ok(body.error.message.length > 0);
+    assert.equal(Object.hasOwn(body, 'issues'), false);
+    assert.doesNotMatch(JSON.stringify(body), /test-provider-key|test-access-token|sensitive-provider-detail/);
+  });
+});
+
+test('whole-word image typos survive correct copy in the request text', async (t) => {
+  const issue = { original: 'Recieve your gift', suggestion: 'Receive your gift', reason: 'Spelling error.',
+    lang: 'en', type: 'error', source: 'image' };
+  const value = { text: 'Receive your gift', media: { images: [png], videos: [] } };
+  const result = { ...clean, issues: [issue], extractedText: 'Recieve your gift' };
+  await mocked(t, () => completion(result), async (calls) => {
+    const response = await worker.fetch(request(value), env);
+    assert.equal(response.status, 200);
+    assert.equal(calls.length, 1);
+    const body = await response.json();
+    assert.deepEqual({ issues: body.issues, discardedIssues: body.discardedIssues },
+      { issues: [issue], discardedIssues: 0 });
+  });
+});
+
+test('whole-word image typos survive correct copy in another image', async (t) => {
+  const issue = { original: 'Recieve your gift', suggestion: 'Receive your gift', reason: 'Spelling error.',
+    lang: 'en', type: 'error', source: 'image' };
+  const value = { text: 'Shop Now', media: { images: [png, png], videos: [] } };
+  const result = { ...clean, issues: [issue], extractedText: 'Recieve your gift\nReceive your gift' };
+  await mocked(t, () => completion(result), async (calls) => {
+    const response = await worker.fetch(request(value), env);
+    assert.equal(response.status, 200);
+    assert.equal(calls.length, 1);
+    const body = await response.json();
+    assert.deepEqual({ issues: body.issues, discardedIssues: body.discardedIssues },
+      { issues: [issue], discardedIssues: 0 });
+  });
+});
+
+test('clipped image fragments that another layer or frame shows complete are not reported', async (t) => {
   const base = { reason: 'Falta una letra.', lang: 'en', type: 'error', source: 'image' };
   const value = { text: 'Shop Now', media: { images: [png, png], videos: [] } };
   const extractedText = 'Buy 3 Months.\net 1 Month FREE.\nRecieve it today\nBuy 3 Months.\nGet 1 Month FREE.';
   const result = { issues: [
     { ...base, original: 'et 1 Month FREE.', suggestion: 'and 1 Month FREE.' },   // clipped: complete elsewhere
-    { ...base, original: 'et 1 Month FREE.', suggestion: 'Get 1 Month FREE.' },   // corrected elsewhere
+    { ...base, original: 'et 1 Month FREE.', suggestion: 'Get 1 Month FREE.' },   // clipped animation frame
     { ...base, original: 'Recieve it today', suggestion: 'Receive it today' },    // genuine, visible error
   ], extractedText, unreadableText: false };
   await mocked(t, () => completion(result), async (calls) => {
@@ -432,8 +490,9 @@ test('analysis configuration and implementation remain isolated from Drive', asy
   assert.match(config, /corrector-ortografico-sips\.pages\.dev/);
   const source = await readFile(new URL('src/analysis-worker.mjs', root), 'utf8');
   assert.doesNotMatch(source, /GOOGLE_DRIVE_API_KEY|www\.googleapis\.com|from ['"]\.\/worker/);
-  for (const path of ['src/worker.mjs', 'wrangler.jsonc']) {
-    const baseline = execFileSync('git', ['show', `HEAD:${path}`], { cwd: root });
-    assert.deepEqual(await readFile(new URL(path, root)), baseline);
-  }
+  // The Drive Worker evolves separately (streamed file action) but must never reach the analysis provider.
+  const driveSource = await readFile(new URL('src/worker.mjs', root), 'utf8');
+  assert.doesNotMatch(driveSource, /OPENROUTER|ANALYSIS_ACCESS_TOKEN|openrouter\.ai|from ['"]\.\/analysis-worker/);
+  const baseline = execFileSync('git', ['show', 'HEAD:wrangler.jsonc'], { cwd: root });
+  assert.deepEqual(await readFile(new URL('wrangler.jsonc', root)), baseline);
 });

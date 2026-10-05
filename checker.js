@@ -129,7 +129,8 @@
 
   const MIN_IMAGE_BASE64_BYTES = 2 * 1024; // skip icons/spacers under ~2 KB
   const MAX_MEDIA_IMAGES = 10;
-  const MAX_MEDIA_VIDEOS = 1;
+  // Keep in sync with MAX_VIDEOS in src/analysis-worker.mjs.
+  const MAX_MEDIA_VIDEOS = 4;
   // Bound embedded media payloads independently of the provider.
   const MAX_MEDIA_TOTAL_BASE64_BYTES = 14 * 1024 * 1024;
 
@@ -188,12 +189,11 @@
     skipped += Math.max(0, imageCandidates.length - MAX_MEDIA_IMAGES);
     const images = imageCandidates.slice(0, MAX_MEDIA_IMAGES);
 
-    let videos = [];
-    if (videoCandidates.length > 0) {
-      const largest = videoCandidates.reduce((a, b) => (b.byteLength > a.byteLength ? b : a));
-      videos = [largest];
-      skipped += videoCandidates.length - MAX_MEDIA_VIDEOS;
-    }
+    // Largest videos first: they most likely carry the advertisement's copy.
+    const videos = [...videoCandidates]
+      .sort((a, b) => b.byteLength - a.byteLength)
+      .slice(0, MAX_MEDIA_VIDEOS);
+    skipped += videoCandidates.length - videos.length;
 
     let totalBytes = 0;
     const selectedImages = [];

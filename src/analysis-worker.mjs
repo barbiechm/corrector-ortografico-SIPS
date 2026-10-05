@@ -1,6 +1,9 @@
 const MiB = 1024 * 1024;
 const REQUEST_LIMIT = 21 * MiB;
 const MEDIA_LIMIT = 14 * MiB;
+const MAX_IMAGES = 10;
+// Keep in sync with MAX_MEDIA_VIDEOS in checker.js.
+const MAX_VIDEOS = 4;
 const RESPONSE_LIMIT = 256 * 1024;
 const TIMEOUT_MS = 90_000;
 const DEFAULT_MODEL = 'google/gemini-3.5-flash-lite';
@@ -137,7 +140,8 @@ function validateInput(input) {
   if (!exactKeys(input, ['text', 'media']) || typeof input.text !== 'string'
     || !exactKeys(input.media, ['images', 'videos'])
     || !Array.isArray(input.media.images) || !Array.isArray(input.media.videos)) throw invalidRequest();
-  if (input.text.length > 60_000 || input.media.images.length > 10 || input.media.videos.length > 1) {
+  if (input.text.length > 60_000 || input.media.images.length > MAX_IMAGES
+    || input.media.videos.length > MAX_VIDEOS) {
     throw new PublicError(413, 'INPUT_LIMIT_EXCEEDED', 'El texto o la cantidad de archivos supera el límite permitido.');
   }
   let aggregate = 0;
@@ -214,11 +218,11 @@ function validatedResult(value, input, model) {
     if (!sources.has(issue.source)
       || (issue.source === 'text' && !suppliedText.includes(collapse(issue.original)))
       || issue.suggestion.trim() === issue.original.trim()) continue;
-    // Images are stacked layers: an overlay covers a flawed background. When another layer
-    // shows the corrected text, or the fragment complete, the flaw is hidden in the composed
-    // advertisement, so it is not a finding. Both versions stay visible in extractedText.
-    if (issue.source !== 'text'
-      && (visibleText.includes(collapse(issue.suggestion)) || clippedElsewhere(visibleText, collapse(issue.original)))) {
+    // Animated or stacked layers can briefly show a clipped fragment of a line that another
+    // frame or layer shows complete. Only that clipping is suppressed: a whole-word typo stays a
+    // finding even when the corrected wording appears elsewhere, because the flawed version is
+    // still shown to the viewer. Both versions stay visible in extractedText.
+    if (issue.source !== 'text' && clippedElsewhere(visibleText, collapse(issue.original))) {
       covered += 1;
       continue;
     }

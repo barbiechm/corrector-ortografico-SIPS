@@ -213,23 +213,48 @@
   const MAX_IMPORT_FILE_BYTES = 5 * 1024 * 1024;
   const DRIVE_FOLDER_URL = /^https:\/\/drive\.google\.com\/drive(?:\/u\/\d+)?\/folders\/[A-Za-z0-9_-]{10,200}\/?(?:[?#].*)?$/;
 
-  async function postImport(body, invalidMessage, failMessage) {
-    const response = await fetch(driveImportEndpoint, {
+  function postImport(body) {
+    return fetch(driveImportEndpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
+  }
+
+  // Error responses are JSON from the Worker, but platform failures (CPU limit,
+  // gateway errors) are not: those keep the HTTP status in the message.
+  async function importErrorMessage(response, failMessage) {
+    const fallback = `${failMessage} (${response.status}).`;
     let payload;
-    try { payload = await response.json(); } catch { throw new Error(invalidMessage); }
-    if (!response.ok) {
-      throw new Error(OC.describeDriveError(payload?.error?.code, payload?.error?.message) || `${failMessage} (${response.status}).`);
-    }
-    if (!Array.isArray(payload?.files)) throw new Error(invalidMessage);
+    try { payload = await response.json(); } catch { return fallback; }
+    return OC.describeDriveError(payload?.error?.code, payload?.error?.message || fallback);
+  }
+
+  async function listDriveFolder(folderUrl) {
+    const response = await postImport({ action: 'list', folderUrl });
+    if (!response.ok) throw new Error(await importErrorMessage(response, 'La importación falló'));
+    let payload;
+    try { payload = await response.json(); } catch { throw new Error('La importación devolvió una respuesta inválida.'); }
+    if (!Array.isArray(payload?.files)) throw new Error('La importación devolvió una respuesta inválida.');
     return payload.files;
   }
 
-  // Lista la carpeta, descarga todos los HTML de a dos y los va revisando
-  // a medida que llegan, sin pasos intermedios.
+  async function downloadDriveFile(folderUrl, file) {
+    const response = await postImport({ action: 'file', folderUrl, fileId: file.id });
+    if (!response.ok) throw new Error(await importErrorMessage(response, 'La descarga falló'));
+    try { return await response.text(); } catch { throw new Error('La descarga se interrumpió.'); }
+  }
+
+  // Un reintento por archivo; nunca rechaza, para que un fallo no corte la importación.
+  async function downloadWithRetry(folderUrl, file) {
+    try { return { content: await downloadDriveFile(folderUrl, file) }; } catch {}
+    try { return { content: await downloadDriveFile(folderUrl, file) }; } catch (err) {
+      return { error: err.message || 'No se pudo descargar el archivo.' };
+    }
+  }
+
+  // Lista la carpeta, descarga cada HTML por separado (hasta dos a la vez) y
+  // los va revisando en orden a medida que llegan, sin pasos intermedios.
   async function importDriveFolder({ force = false } = {}) {
     if (!driveImportEndpoint) {
       setImportStatus('La importación de Drive no está configurada.', 'error');
@@ -252,9 +277,9 @@
     fetchDriveBtn.disabled = true;
     setImportStatus('Buscando archivos HTML…');
     let added = 0;
+    let failed = 0;
     try {
-      const listed = (await postImport({ action: 'list', folderUrl },
-        'La importación devolvió una respuesta inválida.', 'La importación falló'))
+      const listed = (await listDriveFolder(folderUrl))
         .filter(file => typeof file?.id === 'string' && typeof file?.name === 'string' && /\.html?$/i.test(file.name));
       const tooLarge = listed.filter(file => Number.isFinite(file.byteLength) && file.byteLength > MAX_IMPORT_FILE_BYTES);
       const selected = listed.filter(file => !tooLarge.includes(file));
@@ -263,23 +288,39 @@
         return;
       }
 
-      for (let start = 0; start < selected.length; start += 2) {
-        const batch = selected.slice(start, start + 2);
-        setImportStatus(`Descargando ${Math.min(start + batch.length, selected.length)} de ${selected.length} HTML…`);
-        const files = await postImport({ action: 'download', folderUrl, fileIds: batch.map(file => file.id) },
-          'La descarga devolvió una respuesta inválida.', 'La descarga falló');
-        files.forEach(file => {
-          if (typeof file?.name !== 'string' || typeof file?.content !== 'string' || duplicateExists(file.name, file.content)) return;
-          items.push({ id: 'o' + (++seq), name: file.name, source: file.content, text: '', status: 'idle', issues: [] });
-          added++;
-        });
+      // At most two downloads in flight; results are added in listing order.
+      const CONCURRENCY = 2;
+      const pending = selected.slice(0, CONCURRENCY).map(file => downloadWithRetry(folderUrl, file));
+      for (let index = 0; index < selected.length; index++) {
+        setImportStatus(`Descargando ${index + 1} de ${selected.length} HTML…`);
+        const result = await pending[index];
+        if (index + CONCURRENCY < selected.length) {
+          pending.push(downloadWithRetry(folderUrl, selected[index + CONCURRENCY]));
+        }
+        const name = selected[index].name;
+        // A re-import replaces an earlier failed card for the same file.
+        items = items.filter(item => !(item.driveImportError && item.name === name));
+        if (typeof result.content === 'string') {
+          if (!duplicateExists(name, result.content)) {
+            items.push({ id: 'o' + (++seq), name, source: result.content, text: '', status: 'idle', issues: [] });
+            added++;
+          }
+        } else {
+          items.push({ id: 'o' + (++seq), name, status: 'error', uploadError: true, driveImportError: true,
+            errorMsg: result.error, issues: [] });
+          failed++;
+        }
         render();
         processPending();
       }
       const skippedNote = tooLarge.length ? ` ${tooLarge.length} omitido(s) por superar 5 MiB.` : '';
+      const failedNote = failed ? ` ${failed} con error.` : '';
+      // Allow retrying the same link when some files could not be downloaded.
+      if (failed) lastImportedUrl = '';
       setImportStatus(
-        (added ? `${added} archivo(s) importado(s).` : 'Los archivos de la carpeta ya estaban cargados.') + skippedNote,
-        added ? 'success' : '');
+        (added ? `${added} archivo(s) importado(s).` : failed ? 'No se importaron archivos nuevos.' : 'Los archivos de la carpeta ya estaban cargados.')
+          + failedNote + skippedNote,
+        failed ? 'error' : added ? 'success' : '');
     } catch (err) {
       // Permite reintentar el mismo enlace tras un fallo.
       lastImportedUrl = '';

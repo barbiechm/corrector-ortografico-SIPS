@@ -140,16 +140,100 @@ test('sanitized service errors are visible and never marked as clean', async () 
   assert.doesNotMatch(textTree(elements.cards), /sin errores/);
 });
 
-test('Drive import UI and workflow remain identical to the existing implementation', () => {
+test('non-JSON Drive failures show the HTTP status and restore the import button', async () => {
+  const { elements, calls } = setup({ fetchImpl: async () => ({
+    ok: false, status: 503, json: async () => { throw new SyntaxError('Synthetic non-JSON response'); },
+  }) });
+  const folderUrl = 'https://drive.google.com/drive/folders/synthetic_folder_123';
+  elements.driveUrl.value = folderUrl;
+  elements.fetchDrive.onclick();
+  await flush();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, 'https://drive.example/import');
+  assert.deepEqual(calls[0].body, { action: 'list', folderUrl });
+  assert.equal(elements.importStatus.className, 'import-status error');
+  assert.ok(elements.importStatus.textContent.length > 0);
+  assert.equal(elements.fetchDrive.disabled, false);
+  assert.match(elements.importStatus.textContent, /\b503\b/);
+});
+
+// The download workflow itself changed (per-file requests); its behavior is covered above.
+test('Drive import markup, status helpers and event wiring remain identical to the existing implementation', () => {
   const baseline = execFileSync('git', ['show', 'HEAD:index.html'], {
     cwd: new URL('../', import.meta.url), encoding: 'utf8',
   });
   const section = (source, start, end) => source.slice(source.indexOf(start), source.indexOf(end, source.indexOf(start)));
   for (const [start, end] of [
     ['  <div class="drive"', '  <div class="drop"'],
-    ['  function setImportStatus(', '  // ---- extracción del copy'],
+    ['  function setImportStatus(', '  const MAX_IMPORT_FILE_BYTES'],
     ['  fetchDriveBtn.onclick', '\n})();'],
   ]) assert.equal(section(html, start, end), section(baseline, start, end));
+});
+
+const folderUrl = 'https://drive.google.com/drive/folders/synthetic_folder_123';
+const listed = names => names.map((name, index) => ({ id: `synthetic_file_${index}`, name, byteLength: 20 }));
+const driveFake = (files, fileReply) => async (url, options) => {
+  const body = JSON.parse(options.body);
+  if (body.action === 'list') return { ok: true, status: 200, json: async () => ({ files }) };
+  return fileReply(body);
+};
+const htmlReply = content => ({ ok: true, status: 200, text: async () => content });
+
+test('Drive import downloads each file separately and keeps listing order and names', async () => {
+  const files = listed(['a.html', 'b.htm', 'c.html']);
+  const { elements, calls } = setup({ fetchImpl: driveFake(files, body => htmlReply(`<p>${body.fileId}</p>`)) });
+  elements.driveUrl.value = folderUrl;
+  elements.fetchDrive.onclick();
+  await flush();
+  assert.deepEqual(calls.map(call => call.body), [
+    { action: 'list', folderUrl },
+    ...files.map(file => ({ action: 'file', folderUrl, fileId: file.id })),
+  ]);
+  assert.deepEqual(elements.cards.children.map(card => card.children[0].children[0].textContent), ['a.html', 'b.htm', 'c.html']);
+  assert.equal(elements.importStatus.textContent, '3 archivo(s) importado(s).');
+  assert.equal(elements.importStatus.className, 'import-status success');
+  assert.equal(elements.fetchDrive.disabled, false);
+});
+
+test('a failing Drive file is retried once, shown as an error card, and the rest still import', async () => {
+  const files = listed(['a.html', 'b.html', 'c.html']);
+  const attempts = {};
+  const { elements, calls } = setup({ fetchImpl: driveFake(files, body => {
+    attempts[body.fileId] = (attempts[body.fileId] || 0) + 1;
+    if (body.fileId === files[1].id) {
+      return { ok: false, status: 503, json: async () => { throw new SyntaxError('Synthetic CPU limit page'); } };
+    }
+    return htmlReply(`<p>${body.fileId}</p>`);
+  }) });
+  elements.driveUrl.value = folderUrl;
+  elements.fetchDrive.onclick();
+  await flush();
+  assert.deepEqual(attempts, { [files[0].id]: 1, [files[1].id]: 2, [files[2].id]: 1 });
+  assert.equal(calls.length, 5);
+  const cards = elements.cards.children;
+  assert.deepEqual(cards.map(card => card.children[0].children[0].textContent), ['a.html', 'b.html', 'c.html']);
+  const failedCard = textTree(cards[1]);
+  assert.match(failedCard, /error/);
+  assert.match(failedCard, /La descarga falló \(503\)/);
+  assert.doesNotMatch(textTree(cards[0]) + textTree(cards[2]), /La descarga falló/);
+  assert.match(elements.importStatus.textContent, /2 archivo\(s\) importado\(s\)\. 1 con error\./);
+  assert.equal(elements.importStatus.className, 'import-status error');
+  assert.equal(elements.fetchDrive.disabled, false);
+});
+
+test('a Drive file that succeeds on retry is imported without an error card', async () => {
+  const files = listed(['a.html']);
+  let attempts = 0;
+  const { elements } = setup({ fetchImpl: driveFake(files, () => (++attempts === 1
+    ? { ok: false, status: 422, json: async () => ({ error: { code: 'DRIVE_RATE_LIMITED', message: 'raw' } }) }
+    : htmlReply('<p>ok</p>'))) });
+  elements.driveUrl.value = folderUrl;
+  elements.fetchDrive.onclick();
+  await flush();
+  assert.equal(attempts, 2);
+  assert.equal(elements.cards.children.length, 1);
+  assert.doesNotMatch(textTree(elements.cards), /limitando/);
+  assert.equal(elements.importStatus.textContent, '1 archivo(s) importado(s).');
 });
 
 const embedded = (ch) => `<img src="data:image/png;base64,${ch.repeat(3000)}">`;
