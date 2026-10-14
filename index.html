@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ortografía y gramática — beta</title>
+<style>
+  :root {
+    --canvas: #17191d; --surface: #202329; --surface-raised: #282c33;
+    --ink: #f2f0ed; --muted: #aaaeb7; --rule: #3b414b; --rule-strong: #555d6b;
+    --ok: #9bd5af; --fail: #ff9a8d; --warn: #f2cc83; --accent: #ff7d6e;
+    --accent-strong: #ff968a; --focus: #ffe09a; --info: #9cc3f5;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box }
+  body { margin: 0; padding: 48px 24px 96px; background: var(--canvas); color: var(--ink); font: 15px/1.5 var(--sans) }
+  .wrap { max-width: 960px; margin: 0 auto }
+  h1 { font-size: clamp(1.5rem, 3vw, 2rem); line-height: 1.15; letter-spacing: -.03em; margin: 0 0 8px }
+  .sub { max-width: 730px; font-size: 14px; color: var(--muted); margin-bottom: 28px }
+  .beta { display: inline-block; font: 600 10px/1 var(--mono); letter-spacing: .08em; color: var(--accent-strong); border: 1px solid color-mix(in srgb, var(--accent) 65%, transparent); border-radius: 999px; padding: 4px 7px; vertical-align: middle; margin-left: 8px }
+
+  .config, .drive, .card { background: var(--surface); border: 1px solid var(--rule); border-radius: 12px; box-shadow: 0 14px 30px rgba(0, 0, 0, .16) }
+  .config, .drive { padding: 18px; margin-bottom: 16px }
+  .config .row, .drive .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap }
+  .config label, .drive label { color: var(--muted); font-size: 12px; font-weight: 650; letter-spacing: .025em; min-width: 88px }
+  .config .row + .row { margin-top: 12px }
+  input[type=password], input[type=text], input[type=url], select { min-height: 38px; font: inherit; font-size: 13px; padding: 8px 10px; border: 1px solid var(--rule-strong); background: #181a1f; color: var(--ink); border-radius: 8px }
+  input[type=password] { flex: 1; min-width: 220px; font-family: var(--mono) }
+  #driveUrl { flex: 1; min-width: 220px }
+  input::placeholder { color: #858b96; opacity: 1 }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 10px }
+  .hint a, .toggle { color: var(--accent-strong) }
+  .import-status { min-height: 1.5em; font-size: 12.5px; color: var(--muted); margin-top: 10px }
+  .import-status.error { color: var(--fail) }
+  .import-status.success { color: var(--ok) }
+  input[type=checkbox] { accent-color: var(--accent); width: 16px; height: 16px; flex: 0 0 auto }
+
+  .drop { border: 1.5px dashed var(--rule-strong); border-radius: 12px; background: var(--surface); padding: 44px 24px; text-align: center; cursor: pointer; transition: border-color .16s ease, background .16s ease, transform .16s ease }
+  .drop:hover, .drop.hot { border-style: solid; border-color: var(--accent); background: var(--surface-raised) }
+  .drop .hint2 { margin-top: 6px; font-size: 13px; color: var(--muted) }
+  .drop input { display: none }
+
+  button { min-height: 38px; font: 650 13px/1 var(--sans); padding: 9px 13px; border: 1px solid var(--rule-strong); background: var(--surface-raised); color: var(--ink); border-radius: 8px; cursor: pointer; transition: background .16s ease, border-color .16s ease, transform .16s ease }
+  button:hover:not(:disabled) { background: #333842; border-color: #697384 }
+  button:active:not(:disabled) { transform: translateY(1px) }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #261714 }
+  button.primary:hover:not(:disabled) { background: var(--accent-strong); border-color: var(--accent-strong) }
+  button:disabled { opacity: .5; cursor: not-allowed }
+  button:focus-visible, input:focus-visible, select:focus-visible, .drop:focus-visible, .toggle:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px }
+  .actions { margin-top: 16px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center }
+  #count { color: var(--muted); font-size: 12.5px }
+
+  .card { margin-top: 16px; overflow: hidden }
+  .card-h { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 13px 16px; border-bottom: 1px solid var(--rule); background: color-mix(in srgb, var(--surface-raised) 60%, transparent) }
+  .fname { font: 650 12.5px var(--mono); word-break: break-all }
+  .badge { font: 650 10.5px/1.2 var(--mono); padding: 4px 7px; border: 1px solid; border-radius: 999px; white-space: nowrap }
+  .badge.ok { color: var(--ok); border-color: #477957; background: #1d3024 }
+  .badge.bad { color: var(--fail); border-color: #804940; background: #38211f }
+  .badge.warn { color: var(--warn); border-color: #76613a; background: #342d1d }
+  .badge.run { color: var(--muted); border-color: var(--rule-strong); background: #202329 }
+  .card-b { padding: 14px 16px }
+  .issue { padding: 10px 0; border-top: 1px solid var(--rule); font-size: 13.5px }
+  .issue:first-child { border-top: 0 }
+  .issue .bad-t { color: var(--fail); font-weight: 700 }
+  .issue .sugg-t { color: var(--info); font-weight: 700 }
+  .issue .good-t { color: var(--ok); font-weight: 700 }
+  .issue .why { color: var(--muted); font-size: 12.5px; margin-top: 3px }
+  .issue .lang { font: 10.5px var(--mono); color: var(--muted); border: 1px solid var(--rule-strong); border-radius: 5px; padding: 1px 5px; margin-left: 6px }
+  .issue.suggestion .lang.type { color: var(--info); border-color: color-mix(in srgb, var(--info) 55%, transparent) }
+  .extract { margin-top: 10px; font: 11px/1.5 var(--mono); color: var(--muted); max-height: 0; overflow: hidden; transition: max-height .2s ease }
+  .extract.on { max-height: 200px; overflow: auto; border-top: 1px solid var(--rule); padding-top: 8px }
+  .toggle { font-size: 11.5px; cursor: pointer; text-decoration: underline; margin-top: 8px; display: inline-block }
+  footer { max-width: 760px; margin-top: 36px; font-size: 12.5px; color: var(--muted); line-height: 1.65 }
+  code { font-family: var(--mono); font-size: .92em }
+  .stage-hidden { position: fixed; left: -9999px; top: 0; width: 400px; height: 600px; border: 0 }
+
+  @media (max-width: 620px) {
+    body { padding: 28px 16px 64px }
+    .sub { margin-bottom: 22px }
+    .config, .drive { padding: 15px }
+    .config .row, .drive .row { align-items: stretch }
+    .config label, .drive label { width: 100%; min-width: 0 }
+    input[type=password], #driveUrl { width: 100%; min-width: 0; flex-basis: 100% }
+    .drive .row button { width: 100% }
+    .drop { padding: 34px 18px }
+    .actions > button { flex: 1 1 auto }
+    .card-h { align-items: flex-start; flex-direction: column }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { transition-duration: .01ms !important; scroll-behavior: auto !important }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Ortografía y gramática <span class="beta">BETA</span></h1>
+  <div class="sub">Extrae el texto del HTML, incluso en iframes anidados, o lee imágenes para revisar ortografía y gramática mediante el servicio de análisis.</div>
+
+  <div class="config">
+    <div class="row">
+      <label for="key">Clave de acceso</label>
+      <input type="password" id="key" placeholder="pega aquí la clave de acceso al análisis" autocomplete="off">
+      <button id="forgetKey" type="button">Olvidar clave</button>
+    </div>
+    <div class="hint">
+      Usa la clave de acceso proporcionada por quien administra el servicio, no una API key de OpenRouter.
+      Solo permanece en memoria y se envía al servicio de análisis. El servidor elige el modelo y conserva la API key.
+    </div>
+    <div id="keyStatus" class="import-status" role="status" aria-live="polite"></div>
+  </div>
+
+  <div class="drive" id="driveImport">
+    <div class="row">
+      <label for="driveUrl">Carpeta de Drive</label>
+      <input type="url" id="driveUrl" placeholder="pega el enlace de la carpeta pública" autocomplete="off">
+      <button id="fetchDrive" type="button">Revisar carpeta</button>
+    </div>
+    <div class="hint">Pega el enlace y se revisan automáticamente todos los HTML de la carpeta (se descargan de a dos).</div>
+    <div id="importStatus" class="import-status" role="status" aria-live="polite"></div>
+  </div>
+
+  <div class="drop" id="drop" tabindex="0" role="button">
+    <p style="margin:0">Suelta aquí tus <strong>HTML, PNG, JPEG o WebP</strong></p>
+    <div class="hint2">o haz clic para elegirlos · máximo 5 MiB por archivo · se revisan al instante</div>
+    <input type="file" id="picker" accept=".html,.htm,.png,.jpg,.jpeg,.webp" multiple>
+  </div>
+
+  <div class="actions">
+    <button class="primary" id="run" disabled>Volver a revisar todo</button>
+    <button id="clear">Vaciar</button>
+    <span id="count"></span>
+  </div>
+
+  <div id="cards"></div>
+
+  <footer>
+    Beta. Revisa <strong>el texto del HTML</strong>, incluso contenido escapado o en iframes anidados
+    (<code>srcdoc</code>). Si un HTML no tiene texto extraíble, revisa como respaldo las imágenes y el
+    video embebidos como <code>data:</code> base64 en el mismo archivo; no descarga imágenes ni video
+    desde URLs externas. También admite imágenes independientes. El análisis usa OpenRouter desde el servidor;
+    los costos dependen del modelo y del contenido, especialmente en el análisis visual. La IA puede equivocarse: trata cada aviso como candidato a revisar, no
+    como veredicto. Los errores se listan aparte de las sugerencias opcionales. Nombres de marca y
+    palabras inventadas pueden salir como falsos positivos.
+  </footer>
+
+</div>
+
+<script src="runtime-config.js"></script>
+<script src="checker.js"></script>
+<script>
+(() => {
+  'use strict';
+
+  const OC = window.OrthographyChecker;
+
+  const keyEl = document.getElementById('key');
+  const driveUrlEl = document.getElementById('driveUrl');
+  const fetchDriveBtn = document.getElementById('fetchDrive');
+  const importStatusEl = document.getElementById('importStatus');
+  const forgetKeyBtn = document.getElementById('forgetKey');
+  const keyStatusEl = document.getElementById('keyStatus');
+  const dropEl = document.getElementById('drop');
+  const picker = document.getElementById('picker');
+  const runBtn = document.getElementById('run');
+  const clearBtn = document.getElementById('clear');
+  const countEl = document.getElementById('count');
+  const cardsEl = document.getElementById('cards');
+
+  let items = [];   // { id, name, source, text, status, issues, mode, mediaCount }
+  let seq = 0;
+  let running = false;
+  let importing = false;
+  let lastImportedUrl = '';
+  const runtimeConfig = window.ORTHOGRAPHY_RUNTIME_CONFIG || {};
+  const driveImportEndpoint = typeof runtimeConfig.driveImportEndpoint === 'string'
+    ? runtimeConfig.driveImportEndpoint.trim() : '';
+
+  const analysisEndpoint = typeof runtimeConfig.analysisEndpoint === 'string'
+    ? runtimeConfig.analysisEndpoint.trim() : '';
+  // Best-effort migration: never read or persist credentials.
+  try { localStorage.removeItem('orthography.geminiKey'); } catch {}
+
+  function setKeyStatus(message, state = '') {
+    keyStatusEl.textContent = message;
+    keyStatusEl.className = `import-status${state ? ' ' + state : ''}`;
+  }
+
+  keyEl.value = '';
+  keyEl.addEventListener('input', () => {
+    if (analysisEndpoint && keyEl.value.trim()) setKeyStatus('');
+    render();
+  });
+  keyEl.addEventListener('change', () => processPending());
+  forgetKeyBtn.onclick = () => {
+    keyEl.value = '';
+    setKeyStatus(analysisEndpoint ? 'Clave eliminada de la memoria.' : 'El servicio de análisis no está configurado.', analysisEndpoint ? '' : 'error');
+    render();
+  };
+  if (!analysisEndpoint) setKeyStatus('El servicio de análisis no está configurado. Solicita la configuración al administrador.', 'error');
+
+  function setImportStatus(message, state = '') {
+    importStatusEl.textContent = message;
+    importStatusEl.className = `import-status${state ? ' ' + state : ''}`;
+  }
+
+  function duplicateExists(name, source) {
+    return items.some(item => item.name === name && item.source === source);
+  }
+
+  const MAX_IMPORT_FILE_BYTES = 5 * 1024 * 1024;
+  const DRIVE_FOLDER_URL = /^https:\/\/drive\.google\.com\/drive(?:\/u\/\d+)?\/folders\/[A-Za-z0-9_-]{10,200}\/?(?:[?#].*)?$/;
+
+  function postImport(body) {
+    return fetch(driveImportEndpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  // Error responses are JSON from the Worker, but platform failures (CPU limit,
+  // gateway errors) are not: those keep the HTTP status in the message.
+  async function importErrorMessage(response, failMessage) {
+    const fallback = `${failMessage} (${response.status}).`;
+    let payload;
+    try { payload = await response.json(); } catch { return fallback; }
+    return OC.describeDriveError(payload?.error?.code, payload?.error?.message || fallback);
+  }
+
+  async function listDriveFolder(folderUrl) {
+    const response = await postImport({ action: 'list', folderUrl });
+    if (!response.ok) throw new Error(await importErrorMessage(response, 'La importación falló'));
+    let payload;
+    try { payload = await response.json(); } catch { throw new Error('La importación devolvió una respuesta inválida.'); }
+    if (!Array.isArray(payload?.files)) throw new Error('La importación devolvió una respuesta inválida.');
+    return payload.files;
+  }
+
+  async function downloadDriveFile(folderUrl, file) {
+    const response = await postImport({ action: 'file', folderUrl, fileId: file.id });
+    if (!response.ok) throw new Error(await importErrorMessage(response, 'La descarga falló'));
+    try { return await response.text(); } catch { throw new Error('La descarga se interrumpió.'); }
+  }
+
+  // Un reintento por archivo; nunca rechaza, para que un fallo no corte la importación.
+  async function downloadWithRetry(folderUrl, file) {
+    try { return { content: await downloadDriveFile(folderUrl, file) }; } catch {}
+    try { return { content: await downloadDriveFile(folderUrl, file) }; } catch (err) {
+      return { error: err.message || 'No se pudo descargar el archivo.' };
+    }
+  }
+
+  // Lista la carpeta, descarga cada HTML por separado (hasta dos a la vez) y
+  // los va revisando en orden a medida que llegan, sin pasos intermedios.
+  async function importDriveFolder({ force = false } = {}) {
+    if (!driveImportEndpoint) {
+      setImportStatus('La importación de Drive no está configurada.', 'error');
+      return;
+    }
+    const folderUrl = driveUrlEl.value.trim();
+    if (!folderUrl) {
+      driveUrlEl.focus();
+      setImportStatus('Pega el enlace de una carpeta pública de Drive.', 'error');
+      return;
+    }
+    if (!DRIVE_FOLDER_URL.test(folderUrl)) {
+      setImportStatus('El enlace debe ser de una carpeta de Drive (drive.google.com/drive/folders/…).', 'error');
+      return;
+    }
+    if (importing || (!force && folderUrl === lastImportedUrl)) return;
+
+    importing = true;
+    lastImportedUrl = folderUrl;
+    fetchDriveBtn.disabled = true;
+    setImportStatus('Buscando archivos HTML…');
+    let added = 0;
+    let failed = 0;
+    try {
+      const listed = (await listDriveFolder(folderUrl))
+        .filter(file => typeof file?.id === 'string' && typeof file?.name === 'string' && /\.html?$/i.test(file.name));
+      const tooLarge = listed.filter(file => Number.isFinite(file.byteLength) && file.byteLength > MAX_IMPORT_FILE_BYTES);
+      const selected = listed.filter(file => !tooLarge.includes(file));
+      if (!selected.length) {
+        setImportStatus(tooLarge.length ? 'Todos los HTML de la carpeta superan 5 MiB.' : 'No se encontraron archivos HTML.', tooLarge.length ? 'error' : '');
+        return;
+      }
+
+      // At most two downloads in flight; results are added in listing order.
+      const CONCURRENCY = 2;
+      const pending = selected.slice(0, CONCURRENCY).map(file => downloadWithRetry(folderUrl, file));
+      for (let index = 0; index < selected.length; index++) {
+        setImportStatus(`Descargando ${index + 1} de ${selected.length} HTML…`);
+        const result = await pending[index];
+        if (index + CONCURRENCY < selected.length) {
+          pending.push(downloadWithRetry(folderUrl, selected[index + CONCURRENCY]));
+        }
+        const name = selected[index].name;
+        // A re-import replaces an earlier failed card for the same file.
+        items = items.filter(item => !(item.driveImportError && item.name === name));
+        if (typeof result.content === 'string') {
+          if (!duplicateExists(name, result.content)) {
+            items.push({ id: 'o' + (++seq), name, source: result.content, text: '', status: 'idle', issues: [] });
+            added++;
+          }
+        } else {
+          items.push({ id: 'o' + (++seq), name, status: 'error', uploadError: true, driveImportError: true,
+            errorMsg: result.error, issues: [] });
+          failed++;
+        }
+        render();
+        processPending();
+      }
+      const skippedNote = tooLarge.length ? ` ${tooLarge.length} omitido(s) por superar 5 MiB.` : '';
+      const failedNote = failed ? ` ${failed} con error.` : '';
+      // Allow retrying the same link when some files could not be downloaded.
+      if (failed) lastImportedUrl = '';
+      setImportStatus(
+        (added ? `${added} archivo(s) importado(s).` : failed ? 'No se importaron archivos nuevos.' : 'Los archivos de la carpeta ya estaban cargados.')
+          + failedNote + skippedNote,
+        failed ? 'error' : added ? 'success' : '');
+    } catch (err) {
+      // Permite reintentar el mismo enlace tras un fallo.
+      lastImportedUrl = '';
+      setImportStatus(err.message || 'No se pudo importar la carpeta.', 'error');
+    } finally {
+      importing = false;
+      fetchDriveBtn.disabled = false;
+    }
+  }
+
+  if (!driveImportEndpoint) {
+    fetchDriveBtn.disabled = true;
+    setImportStatus('La importación de Drive no está configurada.');
+  }
+
+  // ---- extracción del copy sin renderizar ------------------------------
+  // La lógica pura de extracción y de armado de la solicitud de análisis vive
+  // en checker.js (window.OrthographyChecker); acá solo se inyecta lo que
+  // depende del DOM.
+
+  function decodeEntities(str) {
+    const ta = document.createElement('textarea');
+    ta.innerHTML = str;
+    return ta.value;
+  }
+
+  // ---- analysis service ---------------------------------------------------
+  async function callAnalysis(text, media, key) {
+    const body = OC.buildAnalysisRequest(text, media);
+    const res = await fetch(analysisEndpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
+      body: JSON.stringify(body)
+    });
+    let data;
+    try { data = await res.json(); } catch { throw new Error('El servicio de análisis devolvió una respuesta inválida.'); }
+    if (!res.ok && !data?.error) throw new Error(`No se pudo completar el análisis (${res.status}).`);
+    return OC.parseAnalysisResponse(data);
+  }
+
+  // ---- render -------------------------------------------------------------
+  function render() {
+    cardsEl.textContent = '';
+    items.forEach(it => cardsEl.appendChild(buildCard(it)));
+    countEl.textContent = items.length ? `${items.length} archivo(s)` : '';
+    runBtn.disabled = running || items.length === 0 || !analysisEndpoint || !keyEl.value.trim();
+  }
+
+  function buildIssueRow(iss) {
+    const row = document.createElement('div');
+    const isSuggestion = iss.type === 'suggestion';
+    row.className = `issue${isSuggestion ? ' suggestion' : ''}`;
+    const typeChip = isSuggestion ? `<span class="lang type">sugerencia</span>` : '';
+    const sourceChip = iss.source && iss.source !== 'text'
+      ? `<span class="lang">${escapeHtml(iss.source === 'image' ? 'imagen' : 'video')}</span>` : '';
+    row.innerHTML =
+      `<span class="${isSuggestion ? 'sugg-t' : 'bad-t'}">${escapeHtml(iss.original || '')}</span> → ` +
+      `<span class="good-t">${escapeHtml(iss.suggestion || '')}</span>` +
+      `<span class="lang">${escapeHtml(iss.lang || '?')}</span>` +
+      typeChip + sourceChip +
+      `<div class="why">${escapeHtml(iss.reason || '')}</div>`;
+    return row;
+  }
+
+  function buildCard(it) {
+    const card = document.createElement('div');
+    card.className = 'card';
+
+    const h = document.createElement('div');
+    h.className = 'card-h';
+    const nm = document.createElement('div');
+    nm.className = 'fname';
+    nm.textContent = it.name;
+    const badge = document.createElement('span');
+
+    const issues = it.issues || [];
+    const errors = issues.filter(iss => iss.type !== 'suggestion');
+    const suggestions = issues.filter(iss => iss.type === 'suggestion');
+
+    if (it.status === 'idle')          { badge.className = 'badge run';  badge.textContent = 'sin revisar'; }
+    else if (it.status === 'running')  { badge.className = 'badge run';  badge.textContent = it.stage || 'revisando…'; }
+    else if (it.status === 'error')    { badge.className = 'badge bad';  badge.textContent = 'error'; }
+    else if (it.status === 'empty')    { badge.className = 'badge warn'; badge.textContent = 'sin texto'; }
+    else if (it.status === 'done') {
+      if (it.unreadableText) {
+        badge.className = 'badge warn';
+        badge.textContent = 'lectura incompleta' + (errors.length ? ` · ${errors.length} error(es)` : '');
+      } else if (errors.length > 0) {
+        badge.className = 'badge warn';
+        badge.textContent = `${errors.length} error(es)` + (suggestions.length ? ` · ${suggestions.length} sugerencia(s)` : '');
+      } else if (it.discardedIssues > 0 || it.omittedMedia > 0) {
+        // Con hallazgos descartados no se puede afirmar "sin errores".
+        badge.className = 'badge warn';
+        badge.textContent = 'revisión parcial' + (suggestions.length ? ` · ${suggestions.length} sugerencia(s)` : '');
+      } else if (suggestions.length > 0) {
+        badge.className = 'badge ok';
+        badge.textContent = `sin errores · ${suggestions.length} sugerencia(s)`;
+      } else {
+        badge.className = 'badge ok';
+        badge.textContent = 'sin errores';
+      }
+    }
+    h.append(nm, badge);
+    card.appendChild(h);
+
+    const b = document.createElement('div');
+    b.className = 'card-b';
+
+    if (it.status === 'error') {
+      b.innerHTML = `<div class="issue"><span class="bad-t">${escapeHtml(it.errorMsg)}</span></div>`;
+    } else if (it.status === 'empty') {
+      b.innerHTML = `<div class="why">No se encontró texto ni imágenes/video embebidos para revisar.</div>`;
+    } else if (it.status === 'done') {
+      if (it.unreadableText) {
+        const warning = document.createElement('div');
+        warning.className = 'hint';
+        warning.textContent = 'Hay texto que no se pudo leer. Revisa el original: el análisis es incompleto.';
+        b.appendChild(warning);
+      }
+      if (it.discardedIssues > 0) {
+        const warning = document.createElement('div');
+        warning.className = 'hint';
+        warning.textContent = `Se descartaron ${it.discardedIssues} hallazgo(s) que no se pudieron verificar contra el contenido. Usa “Volver a revisar todo” para confirmar.`;
+        b.appendChild(warning);
+      }
+      if (it.omittedMedia > 0) {
+        const warning = document.createElement('div');
+        warning.className = 'hint';
+        warning.textContent = `${it.omittedMedia} imagen(es)/video no se enviaron por superar el límite de cantidad o tamaño. Su texto no se revisó.`;
+        b.appendChild(warning);
+      }
+      if (errors.length === 0 && suggestions.length === 0 && !it.unreadableText && !it.discardedIssues && !it.omittedMedia) {
+        const scope = { visual: 'en las imágenes/video', hybrid: 'en el texto del HTML ni en sus imágenes/video' }[it.mode] || 'en el texto del HTML';
+        b.innerHTML = `<div class="why">No se detectaron errores ortográficos ni gramaticales ${scope}.</div>`;
+      } else {
+        [...errors, ...suggestions].forEach(iss => b.appendChild(buildIssueRow(iss)));
+      }
+      if (it.mediaCount > 0) {
+        const hint = document.createElement('div');
+        hint.className = 'hint';
+        hint.textContent = `Fuente: ${it.mediaCount} imagen(es)/video${it.uploadMedia ? ' del archivo' : ' embebido(s)'}.`;
+        b.appendChild(hint);
+        const pre = document.createElement('div');
+        pre.className = 'extract on';
+        pre.textContent = 'Texto leído en imágenes/video: ' + (it.extractedText || '(no se encontró texto)');
+        b.appendChild(pre);
+      }
+      if (it.mode !== 'visual') {
+        // ver el texto que se extrajo (para depurar)
+        const toggle = document.createElement('span');
+        toggle.className = 'toggle';
+        toggle.textContent = 'ver texto extraído';
+        const pre = document.createElement('div');
+        pre.className = 'extract';
+        pre.textContent = it.text || '(no se extrajo texto)';
+        toggle.onclick = () => {
+          pre.classList.toggle('on');
+          toggle.textContent = pre.classList.contains('on') ? 'ocultar texto' : 'ver texto extraído';
+        };
+        b.append(toggle, pre);
+      }
+    } else {
+      b.innerHTML = `<div class="why">En cola para revisar.</div>`;
+    }
+
+    card.appendChild(b);
+    return card;
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  // ---- flujo principal ------------------------------------------------
+  // Revisa todo lo que esté en cola ('idle'). Los archivos que llegan durante
+  // una corrida se toman en la misma vuelta, porque se busca el siguiente
+  // pendiente en cada iteración.
+  async function processPending() {
+    if (running || !items.some(it => it.status === 'idle')) return;
+    if (!analysisEndpoint) {
+      setKeyStatus('El servicio de análisis no está configurado. Solicita la configuración al administrador.', 'error');
+      return;
+    }
+    if (!keyEl.value.trim()) {
+      keyEl.focus();
+      setKeyStatus('Pega la clave de acceso al análisis: los archivos se revisan en cuanto la agregues.', 'error');
+      return;
+    }
+
+    running = true;
+    runBtn.disabled = true;
+    clearBtn.disabled = true;
+
+    let it;
+    while ((it = items.find(item => item.status === 'idle'))) {
+      // Read the current in-memory token for each sequential request.
+      const key = keyEl.value.trim();
+      if (!key) { setKeyStatus('Agrega la clave de acceso para continuar.', 'error'); break; }
+      it.status = 'running'; it.stage = 'leyendo texto…'; render();
+      try {
+        it.unreadableText = false;
+        it.discardedIssues = 0;
+        it.extractedText = '';
+        it.text = it.uploadMedia ? '' : OC.extractText(it.source, decodeEntities);
+        // El copy suele estar repartido: parte como texto HTML y parte dibujado
+        // dentro de las imágenes embebidas. Siempre se revisan ambos juntos.
+        it.stage = 'buscando imágenes y video…'; render();
+        const media = it.uploadMedia
+          || OC.extractEmbeddedMedia(OC.decodeMultiple(it.source, decodeEntities), it.source);
+        const hasText = Boolean(it.text.trim());
+        it.mediaCount = media.images.length + media.videos.length;
+        it.omittedMedia = media.omitted || 0;
+        it.mode = hasText && it.mediaCount ? 'hybrid' : it.mediaCount ? 'visual' : 'text';
+        if (hasText || it.mediaCount) {
+          it.stage = it.mediaCount ? 'leyendo texto e imágenes…' : 'revisando ortografía y gramática…'; render();
+          Object.assign(it, await callAnalysis(hasText ? it.text : '', it.mediaCount ? media : {}, key));
+          it.status = 'done';
+        } else {
+          it.issues = [];
+          it.status = 'empty';
+        }
+      } catch (err) {
+        it.status = 'error';
+        it.errorMsg = err.message;
+      }
+      render();
+    }
+
+    running = false;
+    clearBtn.disabled = false;
+    render();
+  }
+
+  function rerunAll() {
+    items.forEach(it => { if (!it.uploadError) { it.status = 'idle'; it.issues = []; } });
+    render();
+    processPending();
+  }
+
+  // ---- entrada de archivos ---------------------------------------------
+  async function addFiles(list) {
+    const files = [...list];
+    files.sort((a, b) => a.name.localeCompare(b.name, 'es', { numeric: true }));
+    // Read sequentially and settle every file before starting the analysis queue.
+    for (const file of files) {
+      try {
+        const classification = OC.classifyUploadFile(file);
+        const source = await new Promise((resolve, reject) => {
+          const r = new FileReader();
+          r.onload = () => resolve(String(r.result));
+          r.onerror = r.onabort = () => reject(new Error('No se pudo leer el archivo. Intenta seleccionarlo de nuevo.'));
+          if (classification.kind === 'image') r.readAsDataURL(file);
+          else r.readAsText(file);
+        });
+        const uploadMedia = classification.kind === 'image'
+          ? { images: [OC.parseImageDataUrl(source, classification.mimeType)], videos: [] } : undefined;
+        if (!duplicateExists(file.name, source)) {
+          items.push({ id: 'o' + (++seq), name: file.name, source, uploadMedia, text: '', status: 'idle', issues: [] });
+        }
+      } catch (err) {
+        items.push({ id: 'o' + (++seq), name: file.name, status: 'error', uploadError: true, errorMsg: err.message, issues: [] });
+      }
+      render();
+    }
+    processPending();
+  }
+
+  dropEl.onclick = () => picker.click();
+  dropEl.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); picker.click(); } };
+  picker.onchange = e => { addFiles(e.target.files); picker.value = ''; };
+  ['dragenter','dragover'].forEach(t => dropEl.addEventListener(t, e => { e.preventDefault(); dropEl.classList.add('hot'); }));
+  ['dragleave','drop'].forEach(t => dropEl.addEventListener(t, e => { e.preventDefault(); dropEl.classList.remove('hot'); }));
+  dropEl.addEventListener('drop', e => addFiles(e.dataTransfer.files));
+  window.addEventListener('dragover', e => e.preventDefault());
+  window.addEventListener('drop', e => e.preventDefault());
+
+  runBtn.onclick = rerunAll;
+  clearBtn.onclick = () => { items = []; lastImportedUrl = ''; render(); };
+  fetchDriveBtn.onclick = () => importDriveFolder({ force: true });
+  // Pegar el enlace (o Enter / salir del campo) dispara la importación.
+  driveUrlEl.addEventListener('paste', () => setTimeout(() => importDriveFolder(), 0));
+  driveUrlEl.addEventListener('change', () => importDriveFolder());
+  driveUrlEl.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); importDriveFolder(); } });
+})();
+</script>
+</body>
+</html>

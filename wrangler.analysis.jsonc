@@ -1,0 +1,10 @@
+{
+  "name": "corrector-ortografico-analysis",
+  "main": "src/analysis-worker.mjs",
+  "compatibility_date": "2026-09-18",
+  // Configure OPENROUTER_API_KEY and ANALYSIS_ACCESS_TOKEN as Worker secrets.
+  "vars": {
+    "ALLOWED_ORIGINS": "https://corrector-ortografico-sips.pages.dev",
+    "OPENROUTER_MODEL": "google/gemini-3.5-flash-lite"
+  }
+}
