@@ -28,9 +28,10 @@ class Element {
   click() {}
 }
 
-function setup({ endpoint = 'https://analysis.example/analyze', storageThrows = false, fetchImpl } = {}) {
+function setup({ endpoint = 'https://analysis.example/analyze', storageThrows = false, storedToken = null, fetchImpl } = {}) {
   const elements = Object.fromEntries([...html.matchAll(/id="([^"]+)"/g)].map(m => [m[1], new Element()]));
-  const calls = []; const reads = []; const removals = [];
+  const calls = []; const reads = []; const removals = []; const stored = new Map(storedToken ? [['orthography.analysisToken', storedToken]] : []);
+  const documentListeners = {};
   class Reader {
     read(file, mode) {
       reads.push([file.name, mode]);
@@ -44,12 +45,14 @@ function setup({ endpoint = 'https://analysis.example/analyze', storageThrows = 
     readAsDataURL(file) { this.read(file, 'data'); }
   }
   const context = {
-    document: { getElementById: id => elements[id], createElement: () => new Element() },
-    ORTHOGRAPHY_RUNTIME_CONFIG: { analysisEndpoint: endpoint, driveImportEndpoint: 'https://drive.example/import' },
-    FileReader: Reader, setTimeout, localStorage: {
-      getItem() { throw new Error('Credentials must never be read'); },
-      setItem() { throw new Error('Credentials must never be stored'); },
-      removeItem(key) { removals.push(key); if (storageThrows) throw new Error('Storage blocked'); },
+    document: { getElementById: id => elements[id], createElement: () => new Element(),
+      addEventListener: (name, callback) => { documentListeners[name] = callback; } },
+    ORTHOGRAPHY_RUNTIME_CONFIG: { analysisEndpoint: endpoint, driveImportEndpoint: 'https://drive.example/import', retryBaseDelayMs: 0 },
+    FileReader: Reader, setTimeout, clearTimeout, AbortController, localStorage: {
+      // Only the analysis token may be persisted; the legacy Gemini key is never read.
+      getItem(key) { if (key !== 'orthography.analysisToken') throw new Error(`Unexpected read of ${key}`); if (storageThrows) throw new Error('Storage blocked'); return stored.get(key) ?? null; },
+      setItem(key, value) { if (key !== 'orthography.analysisToken') throw new Error(`Unexpected write of ${key}`); if (storageThrows) throw new Error('Storage blocked'); stored.set(key, value); },
+      removeItem(key) { removals.push(key); if (storageThrows) throw new Error('Storage blocked'); stored.delete(key); },
     },
     fetch: async (url, options) => {
       calls.push({ url, options, body: JSON.parse(options.body) });
@@ -61,9 +64,10 @@ function setup({ endpoint = 'https://analysis.example/analyze', storageThrows = 
   vm.createContext(context);
   vm.runInContext(checker, context);
   vm.runInContext(inline, context);
-  return { elements, calls, reads, removals };
+  return { elements, calls, reads, removals, stored, documentListeners };
 }
-const flush = async () => { for (let i = 0; i < 12; i++) await new Promise(resolve => setImmediate(resolve)); };
+// Alternates immediates and zero-delay timers so retry waits (0 ms in tests) also complete.
+const flush = async () => { for (let i = 0; i < 40; i++) await new Promise(resolve => (i % 2 ? setTimeout(resolve, 0) : setImmediate(resolve))); };
 const image = (name = 'a.png') => ({ name, type: '', size: 3, content: 'data:application/octet-stream;base64,AAAA' });
 function textTree(element) { return [element.textContent, element.markup || '', ...element.children.map(textTree)].join(' '); }
 
@@ -103,7 +107,7 @@ test('invalid and unreadable files remain visible while valid HTML completes the
   elements.key.value = 'access-token';
   elements.picker.onchange({ target: { files: [
     { name: 'a.png', type: 'image/jpeg', size: 3 },
-    { name: 'b.html', size: 5 * 1024 * 1024 + 1 },
+    { name: 'b.html', size: 25 * 1024 * 1024 + 1 },
     { name: 'c.html', size: 3, fail: true },
     { name: 'd.html', size: 20, content: '<p>Oferta especial</p>' },
   ] } });
@@ -113,7 +117,7 @@ test('invalid and unreadable files remain visible while valid HTML completes the
   assert.equal(calls[0].body.text, 'Oferta especial');
   const rendered = textTree(elements.cards);
   assert.match(rendered, /no coincide/);
-  assert.match(rendered, /5 MiB/);
+  assert.match(rendered, /supera el límite de 25 MiB/);
   assert.match(rendered, /No se pudo leer/);
 });
 
@@ -157,17 +161,23 @@ test('non-JSON Drive failures show the HTTP status and restore the import button
   assert.match(elements.importStatus.textContent, /\b503\b/);
 });
 
-// The download workflow itself changed (per-file requests); its behavior is covered above.
-test('Drive import markup, status helpers and event wiring remain identical to the existing implementation', () => {
-  const baseline = execFileSync('git', ['show', 'HEAD:index.html'], {
-    cwd: new URL('../', import.meta.url), encoding: 'utf8',
-  });
-  const section = (source, start, end) => source.slice(source.indexOf(start), source.indexOf(end, source.indexOf(start)));
-  for (const [start, end] of [
-    ['  <div class="drive"', '  <div class="drop"'],
-    ['  function setImportStatus(', '  const MAX_IMPORT_FILE_BYTES'],
-    ['  fetchDriveBtn.onclick', '\n})();'],
-  ]) assert.equal(section(html, start, end), section(baseline, start, end));
+test('the access token is remembered across sessions and forgotten on request', async () => {
+  const restored = setup({ storedToken: 'saved-token' });
+  assert.equal(restored.elements.key.value, 'saved-token');
+  restored.elements.picker.onchange({ target: { files: [image()] } });
+  await flush();
+  assert.equal(restored.calls[0].options.headers.Authorization, 'Bearer saved-token');
+  restored.elements.forgetKey.onclick();
+  assert.equal(restored.stored.has('orthography.analysisToken'), false);
+
+  const fresh = setup();
+  fresh.elements.key.value = ' typed-token ';
+  fresh.elements.key.listeners.input();
+  assert.equal(fresh.stored.get('orthography.analysisToken'), 'typed-token');
+
+  const blocked = setup({ storageThrows: true });
+  blocked.elements.key.value = 'token';
+  assert.doesNotThrow(() => blocked.elements.key.listeners.input());
 });
 
 const folderUrl = 'https://drive.google.com/drive/folders/synthetic_folder_123';
@@ -190,17 +200,18 @@ test('Drive import downloads each file separately and keeps listing order and na
     ...files.map(file => ({ action: 'file', folderUrl, fileId: file.id })),
   ]);
   assert.deepEqual(elements.cards.children.map(card => card.children[0].children[0].textContent), ['a.html', 'b.htm', 'c.html']);
-  assert.equal(elements.importStatus.textContent, '3 archivo(s) importado(s).');
+  assert.equal(elements.importStatus.textContent, '3 HTML en la carpeta. 3 importado(s).');
   assert.equal(elements.importStatus.className, 'import-status success');
   assert.equal(elements.fetchDrive.disabled, false);
 });
 
-test('a failing Drive file is retried once, shown as an error card, and the rest still import', async () => {
+test('a transient Drive failure is retried with waits, shown as an error card, and can be retried later', async () => {
   const files = listed(['a.html', 'b.html', 'c.html']);
   const attempts = {};
+  let failB = true;
   const { elements, calls } = setup({ fetchImpl: driveFake(files, body => {
     attempts[body.fileId] = (attempts[body.fileId] || 0) + 1;
-    if (body.fileId === files[1].id) {
+    if (body.fileId === files[1].id && failB) {
       return { ok: false, status: 503, json: async () => { throw new SyntaxError('Synthetic CPU limit page'); } };
     }
     return htmlReply(`<p>${body.fileId}</p>`);
@@ -208,16 +219,94 @@ test('a failing Drive file is retried once, shown as an error card, and the rest
   elements.driveUrl.value = folderUrl;
   elements.fetchDrive.onclick();
   await flush();
-  assert.deepEqual(attempts, { [files[0].id]: 1, [files[1].id]: 2, [files[2].id]: 1 });
-  assert.equal(calls.length, 5);
-  const cards = elements.cards.children;
+  assert.deepEqual(attempts, { [files[0].id]: 1, [files[1].id]: 3, [files[2].id]: 1 });
+  assert.equal(calls.length, 6);
+  let cards = elements.cards.children;
   assert.deepEqual(cards.map(card => card.children[0].children[0].textContent), ['a.html', 'b.html', 'c.html']);
   const failedCard = textTree(cards[1]);
   assert.match(failedCard, /error/);
   assert.match(failedCard, /La descarga falló \(503\)/);
   assert.doesNotMatch(textTree(cards[0]) + textTree(cards[2]), /La descarga falló/);
-  assert.match(elements.importStatus.textContent, /2 archivo\(s\) importado\(s\)\. 1 con error\./);
+  assert.match(elements.importStatus.textContent, /3 HTML en la carpeta\. 2 importado\(s\)\. 1 con error/);
   assert.equal(elements.importStatus.className, 'import-status error');
+  assert.equal(elements.fetchDrive.disabled, false);
+  assert.equal(elements.retryFailed.disabled, false);
+
+  failB = false;
+  elements.retryFailed.onclick();
+  await flush();
+  assert.equal(attempts[files[1].id], 4);
+  cards = elements.cards.children;
+  assert.deepEqual(cards.map(card => card.children[0].children[0].textContent), ['a.html', 'b.html', 'c.html']);
+  assert.doesNotMatch(textTree(elements.cards), /La descarga falló/);
+  assert.equal(elements.retryFailed.disabled, true);
+});
+
+test('permanent Drive errors are not retried and files over 25 MiB still get a card', async () => {
+  const files = [...listed(['a.html', 'b.html']), { id: 'synthetic_big', name: 'big.html', byteLength: 30 * 1024 * 1024 }];
+  const attempts = {};
+  const { elements, calls } = setup({ fetchImpl: driveFake(files, body => {
+    attempts[body.fileId] = (attempts[body.fileId] || 0) + 1;
+    if (body.fileId === files[0].id) {
+      return { ok: false, status: 422, json: async () => ({ error: { code: 'DRIVE_ACCESS_DENIED', message: 'raw' } }) };
+    }
+    return htmlReply('<p>ok</p>');
+  }) });
+  elements.driveUrl.value = folderUrl;
+  elements.fetchDrive.onclick();
+  await flush();
+  assert.deepEqual(attempts, { [files[0].id]: 1, [files[1].id]: 1 });
+  assert.ok(calls.every(call => call.body.fileId !== 'synthetic_big'));
+  const rendered = textTree(elements.cards);
+  assert.match(rendered, /big\.html/);
+  assert.match(rendered, /30,0 MiB y supera el límite de 25 MiB/);
+  assert.match(rendered, /Drive denegó el acceso/);
+  assert.match(elements.importStatus.textContent, /3 HTML en la carpeta\. 1 importado\(s\)\. 1 con error.* 1 omitido\(s\) por superar 25 MiB\./);
+});
+
+test('Ctrl+V anywhere on the page imports a Drive folder link right away', async () => {
+  const files = listed(['a.html']);
+  const { elements, calls, documentListeners } = setup({ fetchImpl: driveFake(files, () => htmlReply('<p>ok</p>')) });
+  let prevented = false;
+  const paste = (text, target = {}) => documentListeners.paste({ target, clipboardData: { files: [], getData: () => text },
+    preventDefault: () => { prevented = true; } });
+  paste('hola');
+  assert.equal(calls.length, 0);
+  assert.match(elements.importStatus.textContent, /no es un enlace de carpeta/);
+  paste(`  ${folderUrl}  `);
+  await flush();
+  assert.equal(prevented, true);
+  assert.equal(elements.driveUrl.value, folderUrl);
+  assert.deepEqual(calls.map(call => call.body.action), ['list', 'file']);
+  // Pasting the same link again re-reads the folder.
+  paste(folderUrl);
+  await flush();
+  assert.deepEqual(calls.map(call => call.body.action), ['list', 'file', 'list', 'file']);
+  // A token pasted into its field is ordinary typing...
+  paste('my-access-token', elements.key);
+  await flush();
+  assert.equal(calls.length, 4);
+  // ...but a folder link pasted while the queue focused the token field is imported, not stored.
+  prevented = false;
+  paste(folderUrl, elements.key);
+  await flush();
+  assert.equal(prevented, true);
+  assert.equal(calls.length, 6);
+  assert.equal(elements.key.value, '');
+});
+
+test('Vaciar cancels an import in progress so late files are not added', async () => {
+  const files = listed(['a.html', 'b.html', 'c.html']);
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const { elements } = setup({ fetchImpl: driveFake(files, async () => { await gate; return htmlReply('<p>ok</p>'); }) });
+  elements.driveUrl.value = folderUrl;
+  elements.fetchDrive.onclick();
+  await flush();
+  elements.clear.onclick();
+  release();
+  await flush();
+  assert.equal(elements.cards.children.length, 0);
   assert.equal(elements.fetchDrive.disabled, false);
 });
 
@@ -233,7 +322,7 @@ test('a Drive file that succeeds on retry is imported without an error card', as
   assert.equal(attempts, 2);
   assert.equal(elements.cards.children.length, 1);
   assert.doesNotMatch(textTree(elements.cards), /limitando/);
-  assert.equal(elements.importStatus.textContent, '1 archivo(s) importado(s).');
+  assert.equal(elements.importStatus.textContent, '1 HTML en la carpeta. 1 importado(s).');
 });
 
 const embedded = (ch) => `<img src="data:image/png;base64,${ch.repeat(3000)}">`;
@@ -256,15 +345,45 @@ test('HTML with some text still sends its embedded images in the same request', 
   assert.match(rendered, /Shop Now/);
 });
 
-test('images left out by the limit are reported and never shown as a clean pass', async () => {
+test('more than ten images are reviewed in several requests instead of being dropped', async () => {
   const app = setup({ fetchImpl: cleanReply('Visible') });
   app.elements.key.value = 'token';
   const content = '<p>Shop Now</p>' + 'ABCDEFGHIJKL'.split('').map(embedded).join('');
   app.elements.picker.onchange({ target: { files: [{ name: 'many.html', type: 'text/html', size: content.length, content }] } });
   await flush();
-  assert.equal(app.calls[0].body.media.images.length, 10);
+  assert.deepEqual(app.calls.map(call => call.body.media.images.length), [10, 2]);
+  assert.deepEqual(app.calls.map(call => call.body.text), ['Shop Now', '']);
+  const rendered = textTree(app.elements.cards);
+  assert.match(rendered, /sin errores/);
+  assert.match(rendered, /revisadas en 2 tandas/);
+  assert.doesNotMatch(rendered, /revisión parcial/);
+});
+
+test('images past the per-file maximum are reported and never shown as a clean pass', async () => {
+  const app = setup({ fetchImpl: cleanReply('Visible') });
+  app.elements.key.value = 'token';
+  const letters = 'ABCDEFGHIJ';
+  const many = [...letters].flatMap(a => [...letters].map(b => `<img src="data:image/png;base64,${(a + b).repeat(1500)}">`)).slice(0, 62);
+  const content = '<p>Shop Now</p>' + many.join('');
+  app.elements.picker.onchange({ target: { files: [{ name: 'huge.html', type: 'text/html', size: content.length, content }] } });
+  await flush();
+  assert.equal(app.calls.reduce((total, call) => total + call.body.media.images.length, 0), 60);
+  assert.ok(app.calls.every(call => call.body.media.images.length <= 10));
   const rendered = textTree(app.elements.cards);
   assert.match(rendered, /revisión parcial/);
-  assert.match(rendered, /2 imagen\(es\)\/video no se enviaron/);
+  assert.match(rendered, /2 imagen\(es\)\/video no se pudieron revisar/);
   assert.doesNotMatch(rendered, /No se detectaron errores/);
+});
+
+test('a lost connection to the analysis service is retried once, then shown in Spanish', async () => {
+  let attempts = 0;
+  const app = setup({ fetchImpl: async () => { attempts++; throw new TypeError('Failed to fetch'); } });
+  app.elements.key.value = 'token';
+  app.elements.picker.onchange({ target: { files: [image()] } });
+  await flush();
+  assert.equal(attempts, 2);
+  const rendered = textTree(app.elements.cards);
+  assert.match(rendered, /No se pudo conectar con el servicio de análisis/);
+  assert.doesNotMatch(rendered, /Failed to fetch/);
+  assert.equal(app.elements.retryFailed.disabled, false);
 });

@@ -4,11 +4,45 @@ const HTML_FILE_NAME = /\.html?$/i;
 
 const MAX_REQUEST_BYTES = 4 * 1024;
 const DRIVE_LIST_PAGE_SIZE = 100;
-const MAX_FILE_BYTES = 5 * 1024 * 1024;
+// HTML packs that embed video or game bundles routinely exceed 5 MiB; the file action streams
+// them through without decoding, so the limit only bounds bandwidth.
+const MAX_FILE_BYTES = 25 * 1024 * 1024;
 const MAX_DOWNLOAD_BATCH_FILES = 3;
+// The legacy JSON batch decodes and re-encodes content, so it keeps the original bound.
+const LEGACY_MAX_FILE_BYTES = 5 * 1024 * 1024;
+const MAX_DRIVE_ERROR_BYTES = 16 * 1024;
+// A pack import downloads every file right after listing; reusing that listing for a short time
+// avoids relisting the folder once per file, which doubled Drive calls and triggered rate limits.
+const LISTING_CACHE_MS = 60_000;
+const LISTING_CACHE_ENTRIES = 50;
+const listingCache = new Map();
+
+export function resetListingCache() {
+  listingCache.clear();
+}
+
+function cachedListing(folderId) {
+  const entry = listingCache.get(folderId);
+  if (!entry) return null;
+  if (Date.now() - entry.at > LISTING_CACHE_MS) {
+    listingCache.delete(folderId);
+    return null;
+  }
+  return entry.files;
+}
+
+function rememberListing(folderId, files) {
+  listingCache.delete(folderId);
+  listingCache.set(folderId, { at: Date.now(), files });
+  while (listingCache.size > LISTING_CACHE_ENTRIES) listingCache.delete(listingCache.keys().next().value);
+}
+
+function allowedOrigins(env) {
+  return env.ALLOWED_ORIGINS?.split(',').map((origin) => origin.trim()).filter(Boolean) ?? [];
+}
 
 function getCorsHeaders(request, env) {
-  const origins = env.ALLOWED_ORIGINS?.split(',').map((origin) => origin.trim()).filter(Boolean) ?? [];
+  const origins = allowedOrigins(env);
   const origin = request.headers.get('Origin');
   const allowedOrigin = origins.length === 0
     ? '*'
@@ -124,8 +158,35 @@ async function fetchDrive(url) {
   return response;
 }
 
-function classifyDriveHttpFailure(response, operation) {
-  if (response.status === 401 || response.status === 403) {
+// Drive reports rate and quota limits as 403 with a reason in the JSON body; only the reason is
+// read (bounded), never returned.
+async function driveErrorReason(response) {
+  try {
+    const text = new TextDecoder().decode(await readLimitedBytes(response.body, MAX_DRIVE_ERROR_BYTES));
+    const reasons = JSON.parse(text)?.error?.errors;
+    return Array.isArray(reasons) && typeof reasons[0]?.reason === 'string' ? reasons[0].reason : '';
+  } catch {
+    void response.body?.cancel().catch(() => {});
+    return '';
+  }
+}
+
+async function classifyDriveHttpFailure(response, operation) {
+  if (response.status === 403) {
+    const reason = await driveErrorReason(response);
+    if (reason === 'rateLimitExceeded' || reason === 'userRateLimitExceeded') {
+      return driveError('DRIVE_RATE_LIMITED', 503, 'Drive is temporarily rate-limiting requests.');
+    }
+    if (reason === 'downloadQuotaExceeded' || reason === 'dailyLimitExceeded' || reason === 'quotaExceeded') {
+      return driveError('DRIVE_QUOTA_EXCEEDED', 503, 'The Drive download quota was exceeded.');
+    }
+    if (reason === 'keyInvalid' || reason === 'accessNotConfigured' || reason === 'ipRefererBlocked') {
+      return driveError('SERVER_MISCONFIGURED', 500, 'Drive import is not configured.');
+    }
+    return driveError('DRIVE_ACCESS_DENIED', 422, 'Drive denied access to the requested resource.');
+  }
+  void response.body?.cancel().catch(() => {});
+  if (response.status === 401) {
     return driveError('DRIVE_ACCESS_DENIED', 422, 'Drive denied access to the requested resource.');
   }
   if (response.status === 404) {
@@ -157,7 +218,7 @@ async function listFolderFiles(folderId, apiKey) {
     if (pageToken) params.pageToken = pageToken;
 
     const response = await fetchDrive(driveUrl('/drive/v3/files', params, apiKey));
-    if (!response.ok) throw classifyDriveHttpFailure(response, 'LIST');
+    if (!response.ok) throw await classifyDriveHttpFailure(response, 'LIST');
 
     let data;
     try {
@@ -190,36 +251,36 @@ function publicFileMetadata(file) {
   };
 }
 
-function fileTooLarge(file) {
-  return Object.assign(new Error(`${file.name} exceeds the 5 MiB file limit`), { code: 'FILE_TOO_LARGE', status: 422 });
+function fileTooLarge(file, limit = MAX_FILE_BYTES) {
+  return Object.assign(new Error(`${file.name} exceeds the ${limit / 1024 / 1024} MiB file limit`), { code: 'FILE_TOO_LARGE', status: 422 });
 }
 
 // Checks the declared and announced sizes and returns the Drive media response unread.
-async function openHtmlFile(file, apiKey) {
+async function openHtmlFile(file, apiKey, limit = MAX_FILE_BYTES) {
   const declaredSize = Number(file.size);
-  if (Number.isFinite(declaredSize) && declaredSize > MAX_FILE_BYTES) throw fileTooLarge(file);
+  if (Number.isFinite(declaredSize) && declaredSize > limit) throw fileTooLarge(file, limit);
 
   const response = await fetchDrive(driveUrl(`/drive/v3/files/${file.id}`, { alt: 'media' }, apiKey));
   if (!response.ok) {
-    throw classifyDriveHttpFailure(response, 'DOWNLOAD');
+    throw await classifyDriveHttpFailure(response, 'DOWNLOAD');
   }
 
   const contentLength = Number(response.headers.get('Content-Length'));
-  if (Number.isFinite(contentLength) && contentLength > MAX_FILE_BYTES) {
+  if (Number.isFinite(contentLength) && contentLength > limit) {
     void response.body?.cancel().catch(() => {});
-    throw fileTooLarge(file);
+    throw fileTooLarge(file, limit);
   }
   return response;
 }
 
 async function fetchHtmlFile(file, apiKey) {
-  const response = await openHtmlFile(file, apiKey);
+  const response = await openHtmlFile(file, apiKey, LEGACY_MAX_FILE_BYTES);
 
   let bytes;
   try {
-    bytes = await readLimitedBytes(response.body, MAX_FILE_BYTES);
+    bytes = await readLimitedBytes(response.body, LEGACY_MAX_FILE_BYTES);
   } catch (cause) {
-    if (cause instanceof RangeError) throw fileTooLarge(file);
+    if (cause instanceof RangeError) throw fileTooLarge(file, LEGACY_MAX_FILE_BYTES);
     throw cause;
   }
 
@@ -259,6 +320,12 @@ export default {
 
     const url = new URL(request.url);
     if (url.pathname !== '/import') return error(request, env, 404, 'NOT_FOUND', 'Endpoint not found.');
+    // CORS alone does not stop other sites or scripts from spending the Drive quota: with an
+    // origin list configured, requests must come from one of those origins.
+    const origins = allowedOrigins(env);
+    if (origins.length && !origins.includes(request.headers.get('Origin'))) {
+      return error(request, env, 403, 'ORIGIN_NOT_ALLOWED', 'Requests must come from an allowed origin.');
+    }
     if (!env.GOOGLE_DRIVE_API_KEY) return error(request, env, 500, 'SERVER_MISCONFIGURED', 'Drive import is not configured.');
 
     let folderId;
@@ -281,21 +348,28 @@ export default {
     }
 
     try {
+      if (body.action === 'file') {
+        // A recent listing is reused; a file missing from it is checked against a fresh one.
+        let file = cachedListing(folderId)?.find((listed) => listed.id === body.fileId);
+        if (!file) {
+          const listedFiles = await listFolderFiles(folderId, env.GOOGLE_DRIVE_API_KEY);
+          rememberListing(folderId, listedFiles);
+          file = listedFiles.find((listed) => listed.id === body.fileId);
+        }
+        if (!file) {
+          return error(request, env, 422, 'FILE_NOT_IN_FOLDER', 'Each selected file must belong to the requested public folder.');
+        }
+        return await streamHtmlFile(request, env, file);
+      }
+
       const listedFiles = await listFolderFiles(folderId, env.GOOGLE_DRIVE_API_KEY);
+      rememberListing(folderId, listedFiles);
       if (body.action === 'list') {
         return json(request, env, 200, {
           folderId,
           files: listedFiles.map(publicFileMetadata),
           limits: { maxFileBytes: MAX_FILE_BYTES, maxDownloadBatchFiles: MAX_DOWNLOAD_BATCH_FILES },
         });
-      }
-
-      if (body.action === 'file') {
-        const file = listedFiles.find((listed) => listed.id === body.fileId);
-        if (!file) {
-          return error(request, env, 422, 'FILE_NOT_IN_FOLDER', 'Each selected file must belong to the requested public folder.');
-        }
-        return await streamHtmlFile(request, env, file);
       }
 
       // Legacy batch action, kept while older UI deployments are still in use.

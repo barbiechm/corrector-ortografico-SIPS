@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
+import zlib from 'node:zlib';
+import { randomFillSync } from 'node:crypto';
 
 // Load checker.js (a classic script, not a module) into an isolated VM
 // context and read back the global it attaches, exactly like index.html
@@ -114,46 +116,41 @@ test('extractEmbeddedMedia finds png+mp4, normalizes jpg, skips tiny images and 
   assert.ok(media.skipped >= 2, `expected at least 2 skipped, got ${media.skipped}`);
 });
 
-test('extractEmbeddedMedia caps at 10 images, keeps videos largest first, and reports omissions', () => {
-  const big = (ch) => ch.repeat(3000);
-  const images = 'ABCDEFGHIJKL'.split('')
-    .map((ch) => `<img src="data:image/png;base64,${big(ch)}">`)
-    .join('\n');
-  const videos = [
-    `<video src="data:video/mp4;base64,${big('X')}"></video>`, // smaller
-    `<video src="data:video/webm;base64,${big('Y') + big('Y')}"></video>`, // larger
-  ].join('\n');
-
-  const media = OC.extractEmbeddedMedia(images + videos, '');
-  assert.equal(media.images.length, 10);
-  assert.equal(media.videos.length, 2);
-  assert.deepEqual(plain(media.videos.map((v) => v.mimeType)), ['video/webm', 'video/mp4']);
-  assert.ok(media.skipped >= 2, `expected at least 2 skipped, got ${media.skipped}`);
-  // 2 images over the cap; icons/SVG would not count here.
-  assert.equal(media.omitted, 2);
-  assert.equal(OC.extractEmbeddedMedia('<img src="data:image/png;base64,' + big('A') + '"><img src="data:image/png;base64,AAAA">', '').omitted, 0);
-});
-
-test('extractEmbeddedMedia sends up to 4 videos, largest first, and omits the fifth', () => {
-  assert.equal(OC.MAX_MEDIA_VIDEOS, 4);
-  const video = (ch, length) => `<video src="data:video/mp4;base64,${ch.repeat(length)}"></video>`;
-  const source = [video('A', 400), video('B', 800), video('C', 1200), video('D', 1600), video('E', 2000)].join('\n');
+test('extractEmbeddedMedia keeps every image up to the per-file maximum and reports the rest', () => {
+  assert.equal(OC.MAX_MEDIA_IMAGES, 60);
+  const letters = 'ABCDEFGHIJ';
+  // Sizes grow with the position, so the first two are the smallest.
+  const images = [...letters].flatMap((a) => [...letters].map((b) => a + b)).slice(0, 62)
+    .map((pair, index) => ({ data: pair.repeat(1500) + 'Z'.repeat(index * 4) }));
+  const source = images.map(({ data }) => `<img src="data:image/png;base64,${data}">`).join('\n');
   const media = OC.extractEmbeddedMedia(source, '');
-  assert.equal(media.videos.length, 4);
-  assert.deepEqual(plain(media.videos.map((v) => v.data[0])), ['E', 'D', 'C', 'B']);
-  assert.equal(media.images.length, 0);
-  assert.equal(media.omitted, 1);
-  assert.equal(media.skipped, 1);
-
-  const four = OC.extractEmbeddedMedia(source.split('\n').slice(1).join('\n'), '');
-  assert.equal(four.videos.length, 4);
-  assert.equal(four.omitted, 0);
+  assert.equal(media.images.length, 60);
+  assert.equal(media.omitted, 2);
+  // The two smallest are left out and the source order of the rest is kept.
+  const kept = new Set(plain(media.images.map((image) => image.data)));
+  assert.equal(kept.has(images[0].data), false);
+  assert.equal(kept.has(images[1].data), false);
+  assert.deepEqual(plain(media.images.map((image) => image.data)), images.slice(2).map((image) => image.data));
+  // Twelve images are no longer cut at ten.
+  const twelve = OC.extractEmbeddedMedia('ABCDEFGHIJKL'.split('').map((ch) => `<img src="data:image/png;base64,${ch.repeat(3000)}">`).join(''), '');
+  assert.equal(twelve.images.length, 12);
+  assert.equal(twelve.omitted, 0);
+  assert.equal(OC.extractEmbeddedMedia('<img src="data:image/png;base64,' + 'A'.repeat(3000) + '"><img src="data:image/png;base64,AAAA">', '').omitted, 0);
 });
 
-test('extractEmbeddedMedia keeps the 14 MiB aggregate budget across several videos', () => {
+test('extractEmbeddedMedia keeps videos largest first up to the per-file maximum', () => {
+  assert.equal(OC.MAX_MEDIA_VIDEOS, 8);
+  const video = (ch, length) => `<video src="data:video/mp4;base64,${ch.repeat(length)}"></video>`;
+  const source = 'ABCDEFGHI'.split('').map((ch, index) => video(ch, 400 * (index + 1))).join('\n');
+  const media = OC.extractEmbeddedMedia(source, '');
+  assert.equal(media.videos.length, 8);
+  assert.deepEqual(plain(media.videos.map((v) => v.data[0])), ['I', 'H', 'G', 'F', 'E', 'D', 'C', 'B']);
+  assert.equal(media.omitted, 1);
+});
+
+test('extractEmbeddedMedia counts media omitted by the per-file byte budget', () => {
   const mib = 1024 * 1024;
-  // About 6 MiB decoded each: a third large video would exceed the budget, the small one still fits.
-  const video = (ch) => `<video src="data:video/mp4;base64,${ch.repeat(Math.ceil(6 * mib * 4 / 3))}"></video>`;
+  const video = (ch) => `<video src="data:video/mp4;base64,${ch.repeat(Math.ceil(30 * mib * 4 / 3))}"></video>`;
   const small = `<video src="data:video/mp4;base64,${'S'.repeat(1000)}"></video>`;
   const media = OC.extractEmbeddedMedia([video('A'), video('B'), video('C'), small].join('\n'), '');
   assert.equal(media.videos.length, 3);
@@ -161,21 +158,142 @@ test('extractEmbeddedMedia keeps the 14 MiB aggregate budget across several vide
   assert.equal(media.omitted, 1);
 });
 
-test('extractEmbeddedMedia counts an image omitted by the aggregate byte budget', () => {
-  const dataUri = (size, fill) => {
-    const bytes = Buffer.alloc(size, fill);
-    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(bytes);
-    return `data:image/png;base64,${bytes.toString('base64')}`;
+test('extractEmbeddedMedia accepts already-decoded extra media and dedupes it against the source', () => {
+  const data = 'Q'.repeat(4000);
+  const media = OC.extractEmbeddedMedia(`<img src="data:image/png;base64,${data}">`, '', [
+    { mimeType: 'image/png', data }, { mimeType: 'image/webp', data: 'W'.repeat(4000) }, { mimeType: 'image/png', data: 'tiny' },
+  ]);
+  assert.deepEqual(plain(media.images.map((image) => image.mimeType)), ['image/png', 'image/webp']);
+});
+
+test('planAnalysisBatches splits media by count and bytes and sends the text with the first batch', () => {
+  const image = (ch, bytes = 3000) => ({ mimeType: 'image/png', data: ch.repeat(Math.ceil(bytes * 4 / 3 / 4) * 4) });
+  const images = 'ABCDEFGHIJKLMNOPQRSTUV'.split('').map((ch) => image(ch));
+  const batches = plain(OC.planAnalysisBatches('Shop Now', { images, videos: [] }));
+  assert.deepEqual(batches.map((batch) => batch.media.images.length), [10, 10, 2]);
+  assert.deepEqual(batches.map((batch) => batch.text), ['Shop Now', '', '']);
+
+  const mib = 1024 * 1024;
+  const heavy = plain(OC.planAnalysisBatches('', { images: [image('A', 4 * mib), image('B', 4 * mib), image('C', 1 * mib)], videos: [] }));
+  assert.deepEqual(heavy.map((batch) => batch.media.images.length), [1, 2]);
+
+  const videos = 'ABC'.split('').map((ch) => ({ mimeType: 'video/mp4', data: ch.repeat(400) }));
+  assert.deepEqual(plain(OC.planAnalysisBatches('', { images: [], videos })).map((batch) => batch.media.videos.length), [2, 1]);
+
+  assert.deepEqual(plain(OC.planAnalysisBatches('solo texto', {})), [{ text: 'solo texto', media: { images: [], videos: [] } }]);
+  assert.deepEqual(plain(OC.planAnalysisBatches('  ', {})), []);
+  const longText = Array.from({ length: 300 }, (_, i) => `Línea ${i} `.padEnd(390, 'x')).join('\n');
+  const textBatches = plain(OC.planAnalysisBatches(longText, { images: [image('A')], videos: [] }));
+  assert.ok(textBatches.length >= 3);
+  assert.ok(textBatches.every((batch) => batch.text.length <= OC.MAX_BATCH_TEXT_CHARS));
+  assert.equal(textBatches.map((batch) => batch.text).filter(Boolean).join('\n'), longText);
+  assert.equal(textBatches[0].media.images.length, 1);
+});
+
+test('mergeAnalysisResults combines batches, dedupes findings and drops cross-batch clipped layers', () => {
+  const issue = (original, suggestion, source = 'image') => ({ original, suggestion, reason: 'r', lang: 'en', type: 'error', source });
+  const merged = plain(OC.mergeAnalysisResults([
+    { issues: [issue('Shpo', 'Shop'), issue('et 1 Month FREE.', 'Get 1 Month FREE.')], discardedIssues: 1, extractedText: 'Shpo now\net 1 Month FREE.', unreadableText: false, model: 'm' },
+    { issues: [issue('Shpo', 'Shop')], discardedIssues: 0, extractedText: 'Get 1 Month FREE.', unreadableText: true, model: 'm' },
+  ], 'Texto'));
+  assert.deepEqual(merged.issues.map((item) => item.original), ['Shpo']);
+  assert.equal(merged.discardedIssues, 1);
+  assert.equal(merged.unreadableText, true);
+  assert.equal(merged.extractedText, 'Shpo now\net 1 Month FREE.\nGet 1 Month FREE.');
+  assert.equal(merged.model, 'm');
+});
+
+// Builds a ZIP (stored or deflated entries) the way Cocos "super-html" embeds its assets.
+function buildZip(entries) {
+  const locals = [];
+  const centrals = [];
+  let offset = 0;
+  for (const { name, data, deflate } of entries) {
+    const nameBytes = Buffer.from(name);
+    const body = deflate ? zlib.deflateRawSync(data) : data;
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(deflate ? 8 : 0, 8);
+    local.writeUInt32LE(body.length, 18);
+    local.writeUInt32LE(data.length, 22);
+    local.writeUInt16LE(nameBytes.length, 26);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(deflate ? 8 : 0, 10);
+    central.writeUInt32LE(body.length, 20);
+    central.writeUInt32LE(data.length, 24);
+    central.writeUInt16LE(nameBytes.length, 28);
+    central.writeUInt32LE(offset, 42);
+    locals.push(local, nameBytes, body);
+    centrals.push(central, nameBytes);
+    offset += 30 + nameBytes.length + body.length;
+  }
+  const centralBytes = Buffer.concat(centrals);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(centralBytes.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...locals, centralBytes, end]);
+}
+
+function pngBytes(size, fill) {
+  const bytes = Buffer.alloc(size, fill);
+  Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82]).copy(bytes);
+  return bytes;
+}
+
+// Inserts the junk digit the super-html packer adds at offset - key.length.
+function obfuscate(base64, key, offset, digit = '7') {
+  const pos = offset - key.length;
+  return base64.slice(0, pos) + digit + base64.slice(pos);
+}
+
+test('extractPackedMedia reads images from an embedded Cocos ZIP and repairs obfuscated data URIs', async () => {
+  const browserish = { atob, btoa, Blob, Response, DecompressionStream, TextDecoder };
+  vm.createContext(browserish);
+  vm.runInContext(checkerSource, browserish, { filename: 'checker.js' });
+  const packed = browserish.OrthographyChecker;
+
+  // Incompressible content keeps the embedded ZIP as long as a real one.
+  const binary = pngBytes(5000, 1);
+  randomFillSync(binary, 16);
+  const resKeyA = 'assets/main/native/aa/aaaaaaaa-1111.png';
+  const resKeyB = 'assets/main/native/bb/bbbbbbbb-22222.png';
+  const textEntry = 'assets/main/native/cc/cccccccc-333.png';
+  const webp = Buffer.alloc(6000, 3);
+  Buffer.from('RIFF').copy(webp, 0);
+  webp.writeUInt32LE(webp.length - 8, 4);
+  Buffer.from('WEBPVP8 ').copy(webp, 8);
+  const offset = resKeyA.length + 8;
+  const res = {
+    [resKeyA]: `data:image/png;base64,${obfuscate(pngBytes(4000, 2).toString('base64'), resKeyA, offset)}`,
+    [resKeyB]: `data:image/png;base64,${obfuscate(pngBytes(4500, 4).toString('base64'), resKeyB, offset)}`,
+    'assets/sound.mp3': 'data:audio/mpeg;base64,SUQzAAAA',
+    'assets/main/native/dd/broken.webp': 'data:image/webp;base64,' + 'A'.repeat(5001),
+    '@src/main.js': 'console.log(1)',
   };
-  const first = dataUri(10 * 1024 * 1024, 1);
-  const second = dataUri(5 * 1024 * 1024, 2);
-  const source = `<img src="${first}"><img src="${second}">`;
-  const media = OC.extractEmbeddedMedia(source, '');
-  assert.equal(media.images.length, 1);
-  assert.equal(media.images[0].data, first.split(',')[1]);
-  assert.equal(media.videos.length, 0);
-  assert.equal(media.omitted, 1);
-  assert.equal(media.skipped, 1);
+  const zip = buildZip([
+    { name: 'assets/', data: Buffer.alloc(0) },
+    { name: 'assets/main/native/ee/binary.png', data: binary, deflate: true },
+    { name: textEntry, data: Buffer.from(`data:image/webp;base64,${obfuscate(webp.toString('base64'), textEntry, offset)}`), deflate: true },
+    { name: '__res', data: Buffer.from(JSON.stringify(res)), deflate: true },
+    { name: 'cocos-js/cc.js', data: Buffer.from('x'.repeat(100)) },
+  ]);
+  const html = `<script>window.__zip = "${zip.toString('base64')}";</script>`;
+  const result = await packed.extractPackedMedia(html);
+  assert.equal(result.found, true);
+  assert.equal(result.unrecoverable, 1);
+  const decoded = plain(result.media).map(({ mimeType, data }) => [mimeType, Buffer.from(data, 'base64')]);
+  assert.equal(decoded.length, 4);
+  assert.deepEqual(decoded.map(([mimeType]) => mimeType).sort(), ['image/png', 'image/png', 'image/png', 'image/webp']);
+  assert.ok(decoded.some(([, bytes]) => bytes.equals(binary)));
+  assert.ok(decoded.some(([, bytes]) => bytes.equals(pngBytes(4000, 2))));
+  assert.ok(decoded.some(([, bytes]) => bytes.equals(pngBytes(4500, 4))));
+  assert.ok(decoded.some(([, bytes]) => bytes.equals(webp)));
+
+  assert.deepEqual(plain(await packed.extractPackedMedia('<p>sin paquete</p>')), { media: [], unrecoverable: 0, found: false });
 });
 
 test('normalizeIssues drops incomplete entries and fills type/source defaults', () => {
@@ -227,8 +345,12 @@ test('uploads enforce size, extensions and matching declared MIME', () => {
     { name: 'a.png', type: 'image/jpeg', size: 4 },
     { name: 'a.jpg', type: 'image/jpg', size: 4 },
     { name: 'a.gif', type: 'image/gif', size: 4 },
-    { name: 'a.html', size: OC.MAX_UPLOAD_FILE_BYTES + 1 },
+    { name: 'a.png', type: 'image/png', size: OC.MAX_UPLOAD_FILE_BYTES + 1 },
+    { name: 'a.html', size: OC.MAX_HTML_FILE_BYTES + 1 },
   ]) assert.throws(() => OC.classifyUploadFile(file));
+  // HTML packs with embedded video or game bundles are accepted up to 25 MiB.
+  assert.equal(OC.classifyUploadFile({ name: 'a.html', size: OC.MAX_HTML_FILE_BYTES }).kind, 'html');
+  assert.throws(() => OC.classifyUploadFile({ name: 'a.html', size: 26 * 1024 * 1024 }), /26,0 MiB y supera el límite de 25 MiB/);
 });
 
 test('image data URLs are validated and empty browser MIME gets the computed MIME', () => {

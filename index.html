@@ -107,7 +107,8 @@
     </div>
     <div class="hint">
       Usa la clave de acceso proporcionada por quien administra el servicio, no una API key de OpenRouter.
-      Solo permanece en memoria y se envía al servicio de análisis. El servidor elige el modelo y conserva la API key.
+      Se guarda solo en este navegador para las próximas sesiones y se envía únicamente al servicio de análisis;
+      “Olvidar clave” la borra. El servidor elige el modelo y conserva la API key.
     </div>
     <div id="keyStatus" class="import-status" role="status" aria-live="polite"></div>
   </div>
@@ -118,18 +119,19 @@
       <input type="url" id="driveUrl" placeholder="pega el enlace de la carpeta pública" autocomplete="off">
       <button id="fetchDrive" type="button">Revisar carpeta</button>
     </div>
-    <div class="hint">Pega el enlace y se revisan automáticamente todos los HTML de la carpeta (se descargan de a dos).</div>
+    <div class="hint">Copia el enlace de la carpeta y pulsa <strong>Ctrl+V</strong> en cualquier parte de esta página: se revisan automáticamente todos los HTML de la carpeta (sin subcarpetas).</div>
     <div id="importStatus" class="import-status" role="status" aria-live="polite"></div>
   </div>
 
   <div class="drop" id="drop" tabindex="0" role="button">
     <p style="margin:0">Suelta aquí tus <strong>HTML, PNG, JPEG o WebP</strong></p>
-    <div class="hint2">o haz clic para elegirlos · máximo 5 MiB por archivo · se revisan al instante</div>
+    <div class="hint2">o haz clic para elegirlos · hasta 25 MiB por HTML y 5 MiB por imagen · se revisan al instante</div>
     <input type="file" id="picker" accept=".html,.htm,.png,.jpg,.jpeg,.webp" multiple>
   </div>
 
   <div class="actions">
     <button class="primary" id="run" disabled>Volver a revisar todo</button>
+    <button id="retryFailed" disabled>Reintentar fallidos</button>
     <button id="clear">Vaciar</button>
     <span id="count"></span>
   </div>
@@ -138,9 +140,9 @@
 
   <footer>
     Beta. Revisa <strong>el texto del HTML</strong>, incluso contenido escapado o en iframes anidados
-    (<code>srcdoc</code>). Si un HTML no tiene texto extraíble, revisa como respaldo las imágenes y el
-    video embebidos como <code>data:</code> base64 en el mismo archivo; no descarga imágenes ni video
-    desde URLs externas. También admite imágenes independientes. El análisis usa OpenRouter desde el servidor;
+    (<code>srcdoc</code>), junto con todas las imágenes y videos embebidos como <code>data:</code> base64,
+    también los empaquetados dentro del ZIP de los juegos Cocos; si son muchos, se envían en varias tandas.
+    No descarga imágenes ni video desde URLs externas. También admite imágenes independientes. El análisis usa OpenRouter desde el servidor;
     los costos dependen del modelo y del contenido, especialmente en el análisis visual. La IA puede equivocarse: trata cada aviso como candidato a revisar, no
     como veredicto. Los errores se listan aparte de las sugerencias opcionales. Nombres de marca y
     palabras inventadas pueden salir como falsos positivos.
@@ -165,6 +167,7 @@
   const dropEl = document.getElementById('drop');
   const picker = document.getElementById('picker');
   const runBtn = document.getElementById('run');
+  const retryFailedBtn = document.getElementById('retryFailed');
   const clearBtn = document.getElementById('clear');
   const countEl = document.getElementById('count');
   const cardsEl = document.getElementById('cards');
@@ -173,14 +176,25 @@
   let seq = 0;
   let running = false;
   let importing = false;
+  let retrying = false;
   let lastImportedUrl = '';
+  let queuedFolderUrl = '';
+  // Bumped by "Vaciar": an import or review that started earlier stops adding results.
+  let generation = 0;
   const runtimeConfig = window.ORTHOGRAPHY_RUNTIME_CONFIG || {};
   const driveImportEndpoint = typeof runtimeConfig.driveImportEndpoint === 'string'
     ? runtimeConfig.driveImportEndpoint.trim() : '';
 
   const analysisEndpoint = typeof runtimeConfig.analysisEndpoint === 'string'
     ? runtimeConfig.analysisEndpoint.trim() : '';
-  // Best-effort migration: never read or persist credentials.
+  // Waits between automatic retries grow from this base (overridable for tests).
+  const RETRY_BASE_MS = Number.isFinite(runtimeConfig.retryBaseDelayMs) ? runtimeConfig.retryBaseDelayMs : 1500;
+  const LIST_TIMEOUT_MS = 45000;
+  const DOWNLOAD_TIMEOUT_MS = 120000;
+  // The analysis Worker gives up after 90 s; this only catches a request that never answers.
+  const ANALYSIS_TIMEOUT_MS = 150000;
+  const TOKEN_STORAGE_KEY = 'orthography.analysisToken';
+  // The old browser-side Gemini key is no longer used: remove it without reading it.
   try { localStorage.removeItem('orthography.geminiKey'); } catch {}
 
   function setKeyStatus(message, state = '') {
@@ -188,17 +202,48 @@
     keyStatusEl.className = `import-status${state ? ' ' + state : ''}`;
   }
 
+  // The access token is remembered in this browser so it is entered once, not every session.
+  function storeToken(value) {
+    try {
+      if (value) localStorage.setItem(TOKEN_STORAGE_KEY, value);
+      else localStorage.removeItem(TOKEN_STORAGE_KEY);
+    } catch {}
+  }
+
   keyEl.value = '';
+  try { keyEl.value = localStorage.getItem(TOKEN_STORAGE_KEY) || ''; } catch {}
   keyEl.addEventListener('input', () => {
+    storeToken(keyEl.value.trim());
     if (analysisEndpoint && keyEl.value.trim()) setKeyStatus('');
     render();
   });
   keyEl.addEventListener('change', () => processPending());
   forgetKeyBtn.onclick = () => {
     keyEl.value = '';
-    setKeyStatus(analysisEndpoint ? 'Clave eliminada de la memoria.' : 'El servicio de análisis no está configurado.', analysisEndpoint ? '' : 'error');
+    storeToken('');
+    setKeyStatus(analysisEndpoint ? 'Clave eliminada de este navegador.' : 'El servicio de análisis no está configurado.', analysisEndpoint ? '' : 'error');
     render();
   };
+
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+  // fetch with a deadline; network failures and timeouts become Spanish, classified errors.
+  async function fetchWithTimeout(url, options, timeoutMs, serviceName) {
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+    try {
+      return await fetch(url, controller ? { ...options, signal: controller.signal } : options);
+    } catch (err) {
+      if (controller?.signal.aborted) {
+        throw Object.assign(new Error(`${serviceName} no respondió a tiempo.`), { code: 'TIMEOUT' });
+      }
+      // Platform failures (for example Cloudflare's CPU limit) arrive without CORS headers,
+      // so the browser only reports a network error.
+      throw Object.assign(new Error(`No se pudo conectar con ${serviceName}. Puede ser un corte de red o un límite temporal del servidor.`), { code: 'NETWORK' });
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
   if (!analysisEndpoint) setKeyStatus('El servicio de análisis no está configurado. Solicita la configuración al administrador.', 'error');
 
   function setImportStatus(message, state = '') {
@@ -210,29 +255,35 @@
     return items.some(item => item.name === name && item.source === source);
   }
 
-  const MAX_IMPORT_FILE_BYTES = 5 * 1024 * 1024;
+  const MAX_IMPORT_FILE_BYTES = OC.MAX_HTML_FILE_BYTES;
   const DRIVE_FOLDER_URL = /^https:\/\/drive\.google\.com\/drive(?:\/u\/\d+)?\/folders\/[A-Za-z0-9_-]{10,200}\/?(?:[?#].*)?$/;
+  // Drive failures worth retrying automatically: the same request can succeed shortly after.
+  const RETRYABLE_IMPORT_CODES = new Set(['NETWORK', 'TIMEOUT', 'DRIVE_RATE_LIMITED', 'DRIVE_UPSTREAM_UNAVAILABLE',
+    'DRIVE_NETWORK_ERROR', 'DRIVE_UNAVAILABLE', 'PLATFORM_ERROR']);
 
-  function postImport(body) {
-    return fetch(driveImportEndpoint, {
+  function postImport(body, timeoutMs) {
+    return fetchWithTimeout(driveImportEndpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-    });
+    }, timeoutMs, 'la importación de Drive');
   }
 
   // Error responses are JSON from the Worker, but platform failures (CPU limit,
   // gateway errors) are not: those keep the HTTP status in the message.
-  async function importErrorMessage(response, failMessage) {
+  async function importError(response, failMessage) {
     const fallback = `${failMessage} (${response.status}).`;
     let payload;
-    try { payload = await response.json(); } catch { return fallback; }
-    return OC.describeDriveError(payload?.error?.code, payload?.error?.message || fallback);
+    try { payload = await response.json(); } catch {
+      return Object.assign(new Error(fallback), { code: response.status >= 500 ? 'PLATFORM_ERROR' : '' });
+    }
+    const code = payload?.error?.code || '';
+    return Object.assign(new Error(OC.describeDriveError(code, payload?.error?.message || fallback)), { code });
   }
 
   async function listDriveFolder(folderUrl) {
-    const response = await postImport({ action: 'list', folderUrl });
-    if (!response.ok) throw new Error(await importErrorMessage(response, 'La importación falló'));
+    const response = await postImport({ action: 'list', folderUrl }, LIST_TIMEOUT_MS);
+    if (!response.ok) throw await importError(response, 'La importación falló');
     let payload;
     try { payload = await response.json(); } catch { throw new Error('La importación devolvió una respuesta inválida.'); }
     if (!Array.isArray(payload?.files)) throw new Error('La importación devolvió una respuesta inválida.');
@@ -240,17 +291,50 @@
   }
 
   async function downloadDriveFile(folderUrl, file) {
-    const response = await postImport({ action: 'file', folderUrl, fileId: file.id });
-    if (!response.ok) throw new Error(await importErrorMessage(response, 'La descarga falló'));
-    try { return await response.text(); } catch { throw new Error('La descarga se interrumpió.'); }
+    const response = await postImport({ action: 'file', folderUrl, fileId: file.id }, DOWNLOAD_TIMEOUT_MS);
+    if (!response.ok) throw await importError(response, 'La descarga falló');
+    try { return await response.text(); } catch {
+      throw Object.assign(new Error('La descarga se interrumpió.'), { code: 'NETWORK' });
+    }
   }
 
-  // Un reintento por archivo; nunca rechaza, para que un fallo no corte la importación.
+  // Up to three attempts with growing waits for transient failures; never rejects,
+  // so one failing file does not stop the import.
   async function downloadWithRetry(folderUrl, file) {
-    try { return { content: await downloadDriveFile(folderUrl, file) }; } catch {}
-    try { return { content: await downloadDriveFile(folderUrl, file) }; } catch (err) {
-      return { error: err.message || 'No se pudo descargar el archivo.' };
+    const waits = [RETRY_BASE_MS, RETRY_BASE_MS * 3];
+    for (let attempt = 0; ; attempt++) {
+      try { return { content: await downloadDriveFile(folderUrl, file) }; } catch (err) {
+        if (attempt >= waits.length || !RETRYABLE_IMPORT_CODES.has(err.code)) {
+          return { error: err.message || 'No se pudo descargar el archivo.' };
+        }
+        await sleep(waits[attempt]);
+      }
     }
+  }
+
+  function driveErrorItem(folderUrl, file, message) {
+    return { id: 'o' + (++seq), name: file.name, status: 'error', uploadError: true, driveImportError: true,
+      driveFile: { id: file.id, name: file.name, byteLength: file.byteLength }, folderUrl, errorMsg: message, issues: [] };
+  }
+
+  function tooLargeMessage(file) {
+    return `El HTML pesa ${OC.formatMiB(file.byteLength)} y supera el límite de 25 MiB, así que no se descargó. Revísalo manualmente.`;
+  }
+
+  // Adds one downloaded (or failed) Drive file in place of an earlier failed card for it.
+  function placeDriveResult(folderUrl, file, result) {
+    const index = items.findIndex(item => item.driveImportError && item.name === file.name);
+    let entry = null;
+    if (typeof result.content === 'string') {
+      if (!duplicateExists(file.name, result.content)) {
+        entry = { id: 'o' + (++seq), name: file.name, source: result.content, text: '', status: 'idle', issues: [] };
+      }
+    } else {
+      entry = driveErrorItem(folderUrl, file, result.error);
+    }
+    if (index >= 0) items.splice(index, 1, ...(entry ? [entry] : []));
+    else if (entry) items.push(entry);
+    return entry;
   }
 
   // Lista la carpeta, descarga cada HTML por separado (hasta dos a la vez) y
@@ -270,21 +354,34 @@
       setImportStatus('El enlace debe ser de una carpeta de Drive (drive.google.com/drive/folders/…).', 'error');
       return;
     }
-    if (importing || (!force && folderUrl === lastImportedUrl)) return;
+    if (!force && folderUrl === lastImportedUrl) return;
+    if (importing) {
+      // Another folder pasted mid-import starts as soon as the current one finishes.
+      if (folderUrl !== lastImportedUrl) {
+        queuedFolderUrl = folderUrl;
+        setImportStatus('La carpeta nueva se importará al terminar la actual…');
+      }
+      return;
+    }
 
     importing = true;
     lastImportedUrl = folderUrl;
     fetchDriveBtn.disabled = true;
+    const startedIn = generation;
     setImportStatus('Buscando archivos HTML…');
     let added = 0;
     let failed = 0;
     try {
       const listed = (await listDriveFolder(folderUrl))
         .filter(file => typeof file?.id === 'string' && typeof file?.name === 'string' && /\.html?$/i.test(file.name));
+      if (startedIn !== generation) return;
       const tooLarge = listed.filter(file => Number.isFinite(file.byteLength) && file.byteLength > MAX_IMPORT_FILE_BYTES);
       const selected = listed.filter(file => !tooLarge.includes(file));
+      // Every HTML of the folder gets a card, including the ones too large to download.
+      for (const file of tooLarge) placeDriveResult(folderUrl, file, { error: tooLargeMessage(file) });
+      if (tooLarge.length) render();
       if (!selected.length) {
-        setImportStatus(tooLarge.length ? 'Todos los HTML de la carpeta superan 5 MiB.' : 'No se encontraron archivos HTML.', tooLarge.length ? 'error' : '');
+        setImportStatus(tooLarge.length ? `Los ${tooLarge.length} HTML de la carpeta superan 25 MiB.` : 'No se encontraron archivos HTML en la carpeta.', tooLarge.length ? 'error' : '');
         return;
       }
 
@@ -294,40 +391,36 @@
       for (let index = 0; index < selected.length; index++) {
         setImportStatus(`Descargando ${index + 1} de ${selected.length} HTML…`);
         const result = await pending[index];
+        if (startedIn !== generation) return;
         if (index + CONCURRENCY < selected.length) {
           pending.push(downloadWithRetry(folderUrl, selected[index + CONCURRENCY]));
         }
-        const name = selected[index].name;
-        // A re-import replaces an earlier failed card for the same file.
-        items = items.filter(item => !(item.driveImportError && item.name === name));
-        if (typeof result.content === 'string') {
-          if (!duplicateExists(name, result.content)) {
-            items.push({ id: 'o' + (++seq), name, source: result.content, text: '', status: 'idle', issues: [] });
-            added++;
-          }
-        } else {
-          items.push({ id: 'o' + (++seq), name, status: 'error', uploadError: true, driveImportError: true,
-            errorMsg: result.error, issues: [] });
-          failed++;
-        }
+        const entry = placeDriveResult(folderUrl, selected[index], result);
+        if (entry?.status === 'idle') added++;
+        else if (entry) failed++;
         render();
         processPending();
       }
-      const skippedNote = tooLarge.length ? ` ${tooLarge.length} omitido(s) por superar 5 MiB.` : '';
-      const failedNote = failed ? ` ${failed} con error.` : '';
-      // Allow retrying the same link when some files could not be downloaded.
-      if (failed) lastImportedUrl = '';
+      const skippedNote = tooLarge.length ? ` ${tooLarge.length} omitido(s) por superar 25 MiB.` : '';
+      const failedNote = failed ? ` ${failed} con error: usa “Reintentar fallidos”.` : '';
       setImportStatus(
-        (added ? `${added} archivo(s) importado(s).` : failed ? 'No se importaron archivos nuevos.' : 'Los archivos de la carpeta ya estaban cargados.')
+        `${selected.length + tooLarge.length} HTML en la carpeta. `
+          + (added ? `${added} importado(s).` : failed ? 'No se importaron archivos nuevos.' : 'Los archivos ya estaban cargados.')
           + failedNote + skippedNote,
-        failed ? 'error' : added ? 'success' : '');
+        failed || tooLarge.length ? 'error' : added ? 'success' : '');
     } catch (err) {
       // Permite reintentar el mismo enlace tras un fallo.
       lastImportedUrl = '';
-      setImportStatus(err.message || 'No se pudo importar la carpeta.', 'error');
+      if (startedIn === generation) setImportStatus(err.message || 'No se pudo importar la carpeta.', 'error');
     } finally {
       importing = false;
       fetchDriveBtn.disabled = false;
+      render();
+      if (queuedFolderUrl) {
+        driveUrlEl.value = queuedFolderUrl;
+        queuedFolderUrl = '';
+        importDriveFolder({ force: true });
+      }
     }
   }
 
@@ -348,17 +441,33 @@
   }
 
   // ---- analysis service ---------------------------------------------------
-  async function callAnalysis(text, media, key) {
+  async function requestAnalysis(text, media, key) {
     const body = OC.buildAnalysisRequest(text, media);
-    const res = await fetch(analysisEndpoint, {
+    const res = await fetchWithTimeout(analysisEndpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
       body: JSON.stringify(body)
-    });
+    }, ANALYSIS_TIMEOUT_MS, 'el servicio de análisis');
     let data;
-    try { data = await res.json(); } catch { throw new Error('El servicio de análisis devolvió una respuesta inválida.'); }
+    try { data = await res.json(); } catch {
+      throw Object.assign(new Error(res.status >= 500
+        ? `El servicio de análisis falló (${res.status}). Puede ser un límite temporal del servidor.`
+        : 'El servicio de análisis devolvió una respuesta inválida.'), { code: res.status >= 500 ? 'PLATFORM_ERROR' : '' });
+    }
     if (!res.ok && !data?.error) throw new Error(`No se pudo completar el análisis (${res.status}).`);
     return OC.parseAnalysisResponse(data);
+  }
+
+  // Retried once only when the request most likely never reached the paid model:
+  // no connection, a platform failure page, or the provider's rate limit.
+  const RETRYABLE_ANALYSIS_CODES = new Set(['NETWORK', 'PLATFORM_ERROR', 'UPSTREAM_RATE_LIMITED']);
+
+  async function callAnalysis(text, media, key) {
+    try { return await requestAnalysis(text, media, key); } catch (err) {
+      if (!RETRYABLE_ANALYSIS_CODES.has(err.code)) throw err;
+      await sleep(RETRY_BASE_MS * 2);
+      return requestAnalysis(text, media, key);
+    }
   }
 
   // ---- render -------------------------------------------------------------
@@ -367,6 +476,12 @@
     items.forEach(it => cardsEl.appendChild(buildCard(it)));
     countEl.textContent = items.length ? `${items.length} archivo(s)` : '';
     runBtn.disabled = running || items.length === 0 || !analysisEndpoint || !keyEl.value.trim();
+    retryFailedBtn.disabled = running || retrying || !items.some(isRetryable);
+  }
+
+  // Analysis errors and Drive download errors can be retried; invalid local files cannot.
+  function isRetryable(item) {
+    return item.status === 'error' && (Boolean(item.driveFile) || !item.uploadError);
   }
 
   function buildIssueRow(iss) {
@@ -449,7 +564,7 @@
       if (it.omittedMedia > 0) {
         const warning = document.createElement('div');
         warning.className = 'hint';
-        warning.textContent = `${it.omittedMedia} imagen(es)/video no se enviaron por superar el límite de cantidad o tamaño. Su texto no se revisó.`;
+        warning.textContent = `${it.omittedMedia} imagen(es)/video no se pudieron revisar (superan el máximo de ${OC.MAX_MEDIA_IMAGES} imágenes por archivo o no se pudieron leer). Revisa esas imágenes manualmente.`;
         b.appendChild(warning);
       }
       if (errors.length === 0 && suggestions.length === 0 && !it.unreadableText && !it.discardedIssues && !it.omittedMedia) {
@@ -461,7 +576,9 @@
       if (it.mediaCount > 0) {
         const hint = document.createElement('div');
         hint.className = 'hint';
-        hint.textContent = `Fuente: ${it.mediaCount} imagen(es)/video${it.uploadMedia ? ' del archivo' : ' embebido(s)'}.`;
+        hint.textContent = `Fuente: ${it.mediaCount} imagen(es)/video${it.uploadMedia ? ' del archivo' : ' embebido(s)'}`
+          + (it.packedMedia ? `, ${it.packedMedia} dentro del paquete del juego` : '')
+          + (it.batchCount > 1 ? `, revisadas en ${it.batchCount} tandas` : '') + '.';
         b.appendChild(hint);
         const pre = document.createElement('div');
         pre.className = 'extract on';
@@ -498,6 +615,47 @@
   // Revisa todo lo que esté en cola ('idle'). Los archivos que llegan durante
   // una corrida se toman en la misma vuelta, porque se busca el siguiente
   // pendiente en cada iteración.
+  async function reviewItem(it, key, startedIn) {
+    it.unreadableText = false;
+    it.discardedIssues = 0;
+    it.extractedText = '';
+    it.packedMedia = 0;
+    it.text = it.uploadMedia ? '' : OC.extractText(it.source, decodeEntities);
+    // El copy suele estar repartido: parte como texto HTML y parte dibujado
+    // dentro de las imágenes embebidas. Siempre se revisan ambos juntos.
+    it.stage = 'buscando imágenes y video…'; render();
+    let packed = { media: [], unrecoverable: 0 };
+    if (!it.uploadMedia) {
+      try { packed = await OC.extractPackedMedia(it.source); } catch { packed = { media: [], unrecoverable: 1 }; }
+    }
+    const media = it.uploadMedia
+      || OC.extractEmbeddedMedia(OC.decodeMultiple(it.source, decodeEntities), it.source, packed.media);
+    const hasText = Boolean(it.text.trim());
+    it.mediaCount = media.images.length + media.videos.length;
+    it.packedMedia = packed.media.length;
+    it.omittedMedia = (media.omitted || 0) + packed.unrecoverable;
+    it.mode = hasText && it.mediaCount ? 'hybrid' : it.mediaCount ? 'visual' : 'text';
+    if (!hasText && !it.mediaCount) {
+      it.issues = [];
+      it.status = 'empty';
+      return;
+    }
+    const batches = OC.planAnalysisBatches(hasText ? it.text : '', media);
+    it.batchCount = batches.length;
+    const results = [];
+    for (let index = 0; index < batches.length; index++) {
+      // Forgetting the token or emptying the list stops the remaining paid requests.
+      const current = keyEl.value.trim();
+      if (!current || startedIn !== generation) throw new Error('Revisión detenida antes de terminar. Usa “Reintentar fallidos”.');
+      it.stage = batches.length > 1 ? `revisando tanda ${index + 1} de ${batches.length}…`
+        : it.mediaCount ? 'leyendo texto e imágenes…' : 'revisando ortografía y gramática…';
+      render();
+      results.push(await callAnalysis(batches[index].text, batches[index].media, index === 0 ? key : current));
+    }
+    Object.assign(it, OC.mergeAnalysisResults(results, hasText ? it.text : ''));
+    it.status = 'done';
+  }
+
   async function processPending() {
     if (running || !items.some(it => it.status === 'idle')) return;
     if (!analysisEndpoint) {
@@ -512,36 +670,16 @@
 
     running = true;
     runBtn.disabled = true;
-    clearBtn.disabled = true;
+    const startedIn = generation;
 
     let it;
-    while ((it = items.find(item => item.status === 'idle'))) {
-      // Read the current in-memory token for each sequential request.
+    while (startedIn === generation && (it = items.find(item => item.status === 'idle'))) {
+      // Read the current token for each sequential request.
       const key = keyEl.value.trim();
       if (!key) { setKeyStatus('Agrega la clave de acceso para continuar.', 'error'); break; }
       it.status = 'running'; it.stage = 'leyendo texto…'; render();
       try {
-        it.unreadableText = false;
-        it.discardedIssues = 0;
-        it.extractedText = '';
-        it.text = it.uploadMedia ? '' : OC.extractText(it.source, decodeEntities);
-        // El copy suele estar repartido: parte como texto HTML y parte dibujado
-        // dentro de las imágenes embebidas. Siempre se revisan ambos juntos.
-        it.stage = 'buscando imágenes y video…'; render();
-        const media = it.uploadMedia
-          || OC.extractEmbeddedMedia(OC.decodeMultiple(it.source, decodeEntities), it.source);
-        const hasText = Boolean(it.text.trim());
-        it.mediaCount = media.images.length + media.videos.length;
-        it.omittedMedia = media.omitted || 0;
-        it.mode = hasText && it.mediaCount ? 'hybrid' : it.mediaCount ? 'visual' : 'text';
-        if (hasText || it.mediaCount) {
-          it.stage = it.mediaCount ? 'leyendo texto e imágenes…' : 'revisando ortografía y gramática…'; render();
-          Object.assign(it, await callAnalysis(hasText ? it.text : '', it.mediaCount ? media : {}, key));
-          it.status = 'done';
-        } else {
-          it.issues = [];
-          it.status = 'empty';
-        }
+        await reviewItem(it, key, startedIn);
       } catch (err) {
         it.status = 'error';
         it.errorMsg = err.message;
@@ -550,8 +688,9 @@
     }
 
     running = false;
-    clearBtn.disabled = false;
     render();
+    // Files queued while an emptied run was finishing its last request.
+    if (startedIn !== generation) processPending();
   }
 
   function rerunAll() {
@@ -560,10 +699,42 @@
     processPending();
   }
 
+  // Analysis errors go back to the queue; Drive download errors are downloaded again.
+  async function retryFailed() {
+    if (retrying) return;
+    retrying = true;
+    render();
+    const startedIn = generation;
+    try {
+      items.forEach(it => { if (it.status === 'error' && !it.uploadError) { it.status = 'idle'; it.issues = []; } });
+      render();
+      processPending();
+      const downloads = items.filter(it => it.status === 'error' && it.driveFile
+        && !(Number.isFinite(it.driveFile.byteLength) && it.driveFile.byteLength > MAX_IMPORT_FILE_BYTES));
+      for (const [index, failed] of downloads.entries()) {
+        if (startedIn !== generation) return;
+        setImportStatus(`Reintentando descarga ${index + 1} de ${downloads.length}…`);
+        const result = await downloadWithRetry(failed.folderUrl, failed.driveFile);
+        if (startedIn !== generation) return;
+        placeDriveResult(failed.folderUrl, failed.driveFile, result);
+        render();
+        processPending();
+      }
+      if (downloads.length) {
+        const still = items.filter(it => it.status === 'error' && it.driveFile).length;
+        setImportStatus(still ? `${still} archivo(s) siguen con error.` : 'Descargas reintentadas correctamente.', still ? 'error' : 'success');
+      }
+    } finally {
+      retrying = false;
+      render();
+    }
+  }
+
   // ---- entrada de archivos ---------------------------------------------
   async function addFiles(list) {
     const files = [...list];
     files.sort((a, b) => a.name.localeCompare(b.name, 'es', { numeric: true }));
+    const startedIn = generation;
     // Read sequentially and settle every file before starting the analysis queue.
     for (const file of files) {
       try {
@@ -577,15 +748,39 @@
         });
         const uploadMedia = classification.kind === 'image'
           ? { images: [OC.parseImageDataUrl(source, classification.mimeType)], videos: [] } : undefined;
+        if (startedIn !== generation) return;
         if (!duplicateExists(file.name, source)) {
           items.push({ id: 'o' + (++seq), name: file.name, source, uploadMedia, text: '', status: 'idle', issues: [] });
         }
       } catch (err) {
+        if (startedIn !== generation) return;
         items.push({ id: 'o' + (++seq), name: file.name, status: 'error', uploadError: true, errorMsg: err.message, issues: [] });
       }
       render();
     }
     processPending();
+  }
+
+  // Ctrl+V anywhere on the page: a Drive folder link starts its import right away,
+  // pasted files are reviewed like dropped ones. Pasting a token into its field is left
+  // alone, but a folder link is never taken as a token (the queue may have focused that field).
+  function handlePaste(e) {
+    const text = (e.clipboardData?.getData('text') || '').trim();
+    const isFolderLink = DRIVE_FOLDER_URL.test(text);
+    if (e.target === keyEl && !isFolderLink) return;
+    const files = e.clipboardData?.files;
+    if (files && files.length) {
+      e.preventDefault();
+      addFiles(files);
+      return;
+    }
+    if (!isFolderLink) {
+      if (e.target !== driveUrlEl && text) setImportStatus('Lo pegado no es un enlace de carpeta de Drive (drive.google.com/drive/folders/…).', 'error');
+      return;
+    }
+    e.preventDefault();
+    driveUrlEl.value = text;
+    importDriveFolder({ force: true });
   }
 
   dropEl.onclick = () => picker.click();
@@ -598,12 +793,19 @@
   window.addEventListener('drop', e => e.preventDefault());
 
   runBtn.onclick = rerunAll;
-  clearBtn.onclick = () => { items = []; lastImportedUrl = ''; render(); };
+  retryFailedBtn.onclick = retryFailed;
+  // Vaciar also cancels an import or review in progress: their late results are dropped.
+  clearBtn.onclick = () => {
+    generation++;
+    items = []; lastImportedUrl = ''; queuedFolderUrl = '';
+    setImportStatus(importing ? 'Importación cancelada.' : '');
+    render();
+  };
   fetchDriveBtn.onclick = () => importDriveFolder({ force: true });
-  // Pegar el enlace (o Enter / salir del campo) dispara la importación.
-  driveUrlEl.addEventListener('paste', () => setTimeout(() => importDriveFolder(), 0));
+  document.addEventListener('paste', handlePaste);
   driveUrlEl.addEventListener('change', () => importDriveFolder());
-  driveUrlEl.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); importDriveFolder(); } });
+  driveUrlEl.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); importDriveFolder({ force: true }); } });
+  render();
 })();
 </script>
 </body>

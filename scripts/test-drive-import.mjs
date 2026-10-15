@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
-import worker from '../src/worker.mjs';
+import test, { beforeEach } from 'node:test';
+import worker, { resetListingCache } from '../src/worker.mjs';
 
 const folderId = '1Zx9Yw8Vu7Ts6Rqp5OnM';
 const fileId = '1A2b3C4d5E6f7G8h9I0j';
 const otherFileId = '0J9i8H7g6F5e4D3c2B1a';
 const env = { GOOGLE_DRIVE_API_KEY: 'test-drive-key' };
 const fiveMiB = 5 * 1024 * 1024;
+const fileLimit = 25 * 1024 * 1024;
+
+beforeEach(() => resetListingCache());
 
 function importRequest(body) {
   return new Request('https://worker.example/import', {
@@ -311,13 +314,13 @@ test('file action rejects an ID outside the folder or malformed without download
   assert.equal(calls.length, 1);
 });
 
-test('file action rejects a declared or announced size over 5 MiB as JSON', async (t) => {
+test('file action rejects a declared or announced size over 25 MiB as JSON', async (t) => {
   const originalFetch = globalThis.fetch;
   t.after(() => { globalThis.fetch = originalFetch; });
   const calls = [];
   globalThis.fetch = async (url) => {
     calls.push(new URL(url));
-    return listing([{ id: fileId, name: 'too-large.html', size: String(fiveMiB + 1) }]);
+    return listing([{ id: fileId, name: 'too-large.html', size: String(fileLimit + 1) }]);
   };
 
   let response = await worker.fetch(fileRequest(), env);
@@ -328,14 +331,14 @@ test('file action rejects a declared or announced size over 5 MiB as JSON', asyn
   globalThis.fetch = async (url) => {
     const parsed = new URL(url);
     if (parsed.pathname === '/drive/v3/files') return listing([{ id: fileId, name: 'unsized.html' }]);
-    return new Response('x', { headers: { 'Content-Length': String(fiveMiB + 1) } });
+    return new Response('x', { headers: { 'Content-Length': String(fileLimit + 1) } });
   };
   response = await worker.fetch(fileRequest(), env);
   assert.equal(response.status, 422);
   assert.equal((await responseBody(response)).error.code, 'FILE_TOO_LARGE');
 });
 
-test('file action streams exactly 5 MiB and aborts a stream that grows past it', async (t) => {
+test('file action streams exactly 25 MiB and aborts a stream that grows past it', async (t) => {
   const originalFetch = globalThis.fetch;
   t.after(() => { globalThis.fetch = originalFetch; });
   const chunk = new Uint8Array(1024 * 1024).fill(120);
@@ -353,13 +356,86 @@ test('file action streams exactly 5 MiB and aborts a stream that grows past it',
     return new Response(upstream());
   };
 
-  chunks = 5;
+  chunks = 25;
   let response = await worker.fetch(fileRequest(), env);
   assert.equal(response.status, 200);
-  assert.equal((await response.arrayBuffer()).byteLength, fiveMiB);
+  assert.equal((await response.arrayBuffer()).byteLength, fileLimit);
 
-  chunks = 6;
+  resetListingCache();
+  chunks = 26;
   response = await worker.fetch(fileRequest(), env);
   assert.equal(response.status, 200);
   await assert.rejects(response.arrayBuffer(), /limit exceeded/);
+});
+
+test('Drive 403 rate and quota reasons are classified as retryable limits, not access denial', async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const reply = (reason) => async (url) => {
+    const parsed = new URL(url);
+    if (parsed.pathname === '/drive/v3/files') return listing([{ id: fileId, name: 'pack.html', size: '10' }]);
+    return Response.json({ error: { code: 403, errors: [{ reason, message: 'secret upstream detail' }] } }, { status: 403 });
+  };
+  for (const [reason, status, code] of [
+    ['rateLimitExceeded', 503, 'DRIVE_RATE_LIMITED'],
+    ['userRateLimitExceeded', 503, 'DRIVE_RATE_LIMITED'],
+    ['downloadQuotaExceeded', 503, 'DRIVE_QUOTA_EXCEEDED'],
+    ['keyInvalid', 500, 'SERVER_MISCONFIGURED'],
+    ['forbidden', 422, 'DRIVE_ACCESS_DENIED'],
+  ]) {
+    resetListingCache();
+    globalThis.fetch = reply(reason);
+    const response = await worker.fetch(fileRequest(), env);
+    const body = await responseBody(response);
+    assert.equal(response.status, status, reason);
+    assert.equal(body.error.code, code, reason);
+    assert.doesNotMatch(JSON.stringify(body), /secret upstream detail|test-drive-key/);
+  }
+  globalThis.fetch = async () => new Response('not json', { status: 403 });
+  const response = await worker.fetch(importRequest({ action: 'list' }), env);
+  assert.equal((await responseBody(response)).error.code, 'DRIVE_ACCESS_DENIED');
+});
+
+test('file downloads reuse a recent listing and relist only for files missing from it', async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const lists = [];
+  let folder = [{ id: fileId, name: 'one.html', size: '10' }];
+  globalThis.fetch = async (url) => {
+    const parsed = new URL(url);
+    if (parsed.pathname === '/drive/v3/files') { lists.push(parsed); return listing(folder); }
+    return new Response('<p>ok</p>');
+  };
+  assert.equal((await worker.fetch(importRequest({ action: 'list' }), env)).status, 200);
+  assert.equal((await worker.fetch(fileRequest(), env)).status, 200);
+  assert.equal((await worker.fetch(fileRequest(), env)).status, 200);
+  assert.equal(lists.length, 1);
+  // A file added after the listing is still verified against a fresh one.
+  folder = [...folder, { id: otherFileId, name: 'two.html', size: '10' }];
+  assert.equal((await worker.fetch(fileRequest(otherFileId), env)).status, 200);
+  assert.equal(lists.length, 2);
+  const unknown = await worker.fetch(fileRequest('9Z8y7X6w5V4u3T2s1R0q'), env);
+  assert.equal(unknown.status, 422);
+  assert.equal(lists.length, 3);
+});
+
+test('with an origin list configured, requests from other or missing origins are refused before Drive', async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const calls = [];
+  globalThis.fetch = async (url) => { calls.push(url); return listing([]); };
+  const configured = { ...env, ALLOWED_ORIGINS: 'https://app.example' };
+  const withOrigin = (origin) => new Request('https://worker.example/import', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...(origin ? { Origin: origin } : {}) },
+    body: JSON.stringify({ action: 'list', folderUrl: `https://drive.google.com/drive/folders/${folderId}` }),
+  });
+  for (const origin of ['https://evil.example', null]) {
+    const response = await worker.fetch(withOrigin(origin), configured);
+    assert.equal(response.status, 403);
+    assert.equal((await responseBody(response)).error.code, 'ORIGIN_NOT_ALLOWED');
+  }
+  assert.equal(calls.length, 0);
+  const allowed = await worker.fetch(withOrigin('https://app.example'), configured);
+  assert.equal(allowed.status, 200);
+  assert.equal(allowed.headers.get('Access-Control-Allow-Origin'), 'https://app.example');
 });
